@@ -19,6 +19,9 @@
 #include <thread>
 #include <vector>
 
+#include <termios.h>
+#include <unistd.h>
+
 #include "rlprof/clock_control.h"
 
 namespace rlprof::interactive {
@@ -166,28 +169,100 @@ std::optional<int> prompt_choice(
   if (options.empty()) {
     return std::nullopt;
   }
-  std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET << "\n";
-  for (std::size_t i = 0; i < options.size(); ++i) {
-    std::cout << "    [" << (i + 1) << "] " << options[i] << "\n";
-  }
-  while (true) {
-    print_prompt_prefix("Select", std::to_string(default_index + 1));
-    const auto line = read_line();
-    if (!line.has_value()) {
-      return std::nullopt;
+
+  // Fall back to numbered input when stdin is not a terminal.
+  if (!isatty(STDIN_FILENO)) {
+    std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET << "\n";
+    for (std::size_t i = 0; i < options.size(); ++i) {
+      std::cout << "    [" << (i + 1) << "] " << options[i] << "\n";
     }
-    if (line->empty()) {
-      return default_index;
-    }
-    try {
-      const int selection = std::stoi(*line);
-      if (selection >= 1 && selection <= static_cast<int>(options.size())) {
-        return selection - 1;
+    while (true) {
+      print_prompt_prefix("Select", std::to_string(default_index + 1));
+      const auto line = read_line();
+      if (!line.has_value()) {
+        return std::nullopt;
       }
-    } catch (const std::exception&) {
+      if (line->empty()) {
+        return default_index;
+      }
+      try {
+        const int selection = std::stoi(*line);
+        if (selection >= 1 && selection <= static_cast<int>(options.size())) {
+          return selection - 1;
+        }
+      } catch (const std::exception&) {
+      }
+      print_warning("enter a number between 1 and " + std::to_string(options.size()));
     }
-    print_warning("enter a number between 1 and " + std::to_string(options.size()));
   }
+
+  // Interactive arrow-key selection.
+  struct termios saved_termios{};
+  tcgetattr(STDIN_FILENO, &saved_termios);
+  struct termios raw = saved_termios;
+  raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
+  tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+
+  const int n = static_cast<int>(options.size());
+  int selected = std::clamp(default_index, 0, n - 1);
+  const int menu_lines = n + 1; // label line + one per option
+
+  const auto render = [&]() {
+    std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET
+              << "  " << DIM << "(↑↓ navigate  enter select  q cancel)" << RESET << "\n";
+    for (int i = 0; i < n; ++i) {
+      if (i == selected) {
+        std::cout << "  " << CYAN << "> " << RESET
+                  << options[static_cast<std::size_t>(i)] << "\n";
+      } else {
+        std::cout << "    " << DIM << options[static_cast<std::size_t>(i)] << RESET << "\n";
+      }
+    }
+    std::flush(std::cout);
+  };
+
+  std::cout << "\033[?25l"; // hide cursor
+  render();
+
+  std::optional<int> result;
+  bool running = true;
+  while (running) {
+    char c = 0;
+    if (read(STDIN_FILENO, &c, 1) != 1) {
+      break;
+    }
+    if (c == '\n' || c == '\r') {
+      result = selected;
+      running = false;
+    } else if (c == 'q' || c == 'Q') {
+      running = false;
+    } else if (c == '\033') {
+      char seq[2] = {};
+      if (read(STDIN_FILENO, &seq[0], 1) == 1 &&
+          read(STDIN_FILENO, &seq[1], 1) == 1 &&
+          seq[0] == '[') {
+        if (seq[1] == 'A') {
+          selected = (selected - 1 + n) % n; // up
+        } else if (seq[1] == 'B') {
+          selected = (selected + 1) % n;     // down
+        }
+      }
+      // Move cursor back to top of menu and re-render.
+      std::cout << "\033[" << menu_lines << "A";
+      render();
+    }
+  }
+
+  std::cout << "\033[?25h"; // show cursor
+  tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+
+  // Replace menu lines with a compact confirmation or clear them.
+  std::cout << "\033[" << menu_lines << "A\033[J";
+  if (result.has_value()) {
+    std::cout << "  " << CYAN << "✓ " << RESET << BOLD << label << RESET
+              << "  " << DIM << options[static_cast<std::size_t>(*result)] << RESET << "\n";
+  }
+  return result;
 }
 
 void print_header(const std::string& text) {
