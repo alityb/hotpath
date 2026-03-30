@@ -16,17 +16,17 @@ struct PatternGroup {
 };
 
 constexpr std::array<PatternGroup, 11> kPatternGroups = {{
-    {"gemm", {"xmma_gemm", "cutlass", "cublas", "nvjet", "wgmma", "gemm", "ampere_bf16", "hmma", "mma", ""}, 9},
-    {"attention", {"flash", "fmha", "paged_attention", "flashattnfwd", "softmax", "splitkv", "attention", "", "", ""}, 7},
+    {"gemm", {"xmma_gemm", "cutlass", "cublas", "nvjet", "wgmma", "ampere_bf16_s168", "gemv2t_kernel", "hmma", "", ""}, 8},
+    {"attention", {"flash", "fmha", "paged_attention", "flashattnfwd", "splitkv", "", "", "", "", ""}, 5},
     {"moe", {"fused_moe", "expert", "topk_softmax", "moe_align", "", "", "", "", "", ""}, 4},
-    {"mamba", {"mamba", "selective_scan", "ssm", "", "", "", "", "", "", ""}, 3},
-    {"activation", {"silu", "gelu", "relu", "act_and_mul", "swiglu", "elementwise", "fused_mul", "", "", ""}, 7},
-    {"norm", {"rms_norm", "layer_norm", "fused_add_rms", "pow_rsqrt", "mean_mul", "rsqrt", "", "", "", ""}, 6},
+    {"mamba", {"mamba", "selective_scan", "ssm", "_chunk_scan", "_chunk_state", "_state_passing", "_causal_conv1d", "_chunk_cumsum", "_bmm_chunk", ""}, 9},
+    {"activation", {"silu", "gelu", "relu", "act_and_mul", "swiglu", "", "", "", "", ""}, 5},
+    {"norm", {"rms_norm", "layer_norm", "fused_add_rms", "", "", "", "", "", "", ""}, 3},
     {"position", {"rotary", "rope", "", "", "", "", "", "", "", ""}, 2},
     {"cache", {"reshape_and_cache", "cache_kernel", "kv_cache", "", "", "", "", "", "", ""}, 3},
-    {"sampling", {"top_k", "top_p", "sample", "argmax", "topk_topp", "topp", "", "", "", ""}, 6},
+    {"sampling", {"top_k", "top_p", "sample", "argmax", "topk_topp", "repetition_penalt", "", "", "", ""}, 6},
     {"comm", {"allreduce", "allgather", "nccl", "reduce_scatter", "", "", "", "", "", ""}, 4},
-    {"memory", {"memcpy", "memset", "fill_kernel", "copy", "", "", "", "", "", ""}, 4},
+    {"memory", {"memcpy", "memset", "fill_kernel", "", "", "", "", "", "", ""}, 3},
 }};
 
 std::string to_lower(std::string_view input) {

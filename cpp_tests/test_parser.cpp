@@ -56,6 +56,19 @@ int main() {
     expect_true(records[1].shared_mem == 64, "unexpected second shared_mem");
   };
 
+  const auto verify_nvtx_records = [](const std::vector<rlprof::profiler::KernelRecord>& records) {
+    expect_true(records.size() == 1, "expected one aggregated kernel record");
+    expect_true(records[0].name == "Kernel2", "unexpected nvtx kernel");
+    expect_true(records[0].category == "attention", "nvtx overlap should override name fallback");
+    expect_true(records[0].total_ns == 100, "unexpected nvtx total_ns");
+    expect_true(records[0].calls == 2, "unexpected nvtx calls");
+    expect_true(records[0].avg_ns == 50, "unexpected nvtx avg_ns");
+    expect_true(records[0].min_ns == 40, "unexpected nvtx min_ns");
+    expect_true(records[0].max_ns == 60, "unexpected nvtx max_ns");
+    expect_true(records[0].registers == 32, "unexpected nvtx registers");
+    expect_true(records[0].shared_mem == 64, "unexpected nvtx shared_mem");
+  };
+
   const auto build_text_schema_db = [&](const fs::path& db_path) {
     fs::remove(db_path);
     sqlite3* db = nullptr;
@@ -144,6 +157,82 @@ int main() {
     }
   };
 
+  const auto build_nvtx_db = [&](const fs::path& db_path) {
+    fs::remove(db_path);
+    sqlite3* db = nullptr;
+    if (sqlite3_open(db_path.c_str(), &db) != SQLITE_OK) {
+      throw std::runtime_error("failed to create NVTX sqlite db");
+    }
+    try {
+      exec_sql(
+          db,
+          R"SQL(
+          CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME (
+              start INTEGER NOT NULL,
+              "end" INTEGER NOT NULL,
+              eventClass INTEGER NOT NULL,
+              globalTid INTEGER,
+              correlationId INTEGER,
+              nameId INTEGER NOT NULL,
+              returnValue INTEGER NOT NULL,
+              callchainId INTEGER
+          )
+          )SQL");
+      exec_sql(
+          db,
+          R"SQL(
+          CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (
+              start INTEGER NOT NULL,
+              "end" INTEGER NOT NULL,
+              correlationId INTEGER,
+              shortName TEXT NOT NULL,
+              registersPerThread INTEGER NOT NULL,
+              staticSharedMemory INTEGER NOT NULL,
+              dynamicSharedMemory INTEGER NOT NULL
+          )
+          )SQL");
+      exec_sql(
+          db,
+          R"SQL(
+          CREATE TABLE NVTX_EVENTS (
+              start INTEGER NOT NULL,
+              "end" INTEGER,
+              text TEXT,
+              textId INTEGER
+          )
+          )SQL");
+      exec_sql(
+          db,
+          R"SQL(
+          INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME
+              (start, "end", eventClass, globalTid, correlationId, nameId, returnValue, callchainId)
+          VALUES
+              (0, 1, 0, 0, 111, 0, 0, NULL),
+              (1, 2, 0, 0, 112, 0, 0, NULL)
+          )SQL");
+      exec_sql(
+          db,
+          R"SQL(
+          INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL
+              (start, "end", correlationId, shortName, registersPerThread, staticSharedMemory, dynamicSharedMemory)
+          VALUES
+              (10, 50, 111, 'Kernel2', 24, 32, 0),
+              (60, 120, 112, 'Kernel2', 32, 32, 32)
+          )SQL");
+      exec_sql(
+          db,
+          R"SQL(
+          INSERT INTO NVTX_EVENTS (start, "end", text, textId)
+          VALUES
+              (0, 200, 'attention', NULL)
+          )SQL");
+      sqlite3_close(db);
+    } catch (...) {
+      sqlite3_close(db);
+      throw;
+    }
+  };
+
   try {
     const fs::path text_db_path = temp_dir / "mock_nsys.sqlite";
     build_text_schema_db(text_db_path);
@@ -154,6 +243,11 @@ int main() {
     build_string_ids_db(string_ids_db_path);
     verify_records(rlprof::profiler::parse_nsys_sqlite(string_ids_db_path));
     fs::remove(string_ids_db_path);
+
+    const fs::path nvtx_db_path = temp_dir / "mock_nsys_nvtx.sqlite";
+    build_nvtx_db(nvtx_db_path);
+    verify_nvtx_records(rlprof::profiler::parse_nsys_sqlite(nvtx_db_path));
+    fs::remove(nvtx_db_path);
   } catch (const std::exception& exc) {
     std::cerr << exc.what() << "\n";
     return 1;

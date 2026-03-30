@@ -12,6 +12,27 @@
 namespace rlprof {
 namespace {
 
+std::vector<std::pair<std::string, std::string>> export_warnings(
+    const std::map<std::string, std::string>& metadata) {
+  std::vector<std::pair<std::string, std::string>> warnings;
+  const auto add_warning = [&](const std::string& key, const std::string& message) {
+    const auto it = metadata.find(key);
+    if (it != metadata.end() && it->second == "true") {
+      warnings.push_back({key, message});
+    }
+  };
+
+  add_warning("warning_sm_clock_unstable", "sm clock varied materially during measurement");
+  add_warning("warning_power_capped", "power cap throttling observed");
+  add_warning("warning_thermal_slowdown", "thermal throttling observed");
+  add_warning("warning_any_clock_throttle", "clock throttling reasons were active");
+  add_warning("warning_temp_high", "gpu temperature reached high operating range");
+  add_warning(
+      "warning_gpu_clocks_unlocked",
+      "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements. See: docs.nvidia.com/deploy/nvidia-smi/index.html");
+  return warnings;
+}
+
 std::string json_escape(const std::string& input) {
   std::string output;
   for (char ch : input) {
@@ -78,6 +99,7 @@ std::vector<std::filesystem::path> export_profile(
     const std::filesystem::path& path,
     const std::string& format) {
   const ProfileData profile = load_profile(path);
+  const auto warnings = export_warnings(profile.meta);
   std::vector<std::filesystem::path> outputs;
 
   if (format == "json") {
@@ -90,6 +112,13 @@ std::vector<std::filesystem::path> export_profile(
       out << (std::next(it) == profile.meta.end() ? "\n" : ",\n");
     }
     out << "  },\n";
+    out << "  \"warnings\": [\n";
+    for (std::size_t i = 0; i < warnings.size(); ++i) {
+      out << "    {\"key\": \"" << json_escape(warnings[i].first)
+          << "\", \"message\": \"" << json_escape(warnings[i].second) << "\"}";
+      out << (i + 1 == warnings.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n";
     out << "  \"kernels\": [\n";
     for (std::size_t i = 0; i < profile.kernels.size(); ++i) {
       const auto& kernel = profile.kernels[i];
@@ -145,6 +174,15 @@ std::vector<std::filesystem::path> export_profile(
     }
     write_csv(meta_path, meta_lines);
     outputs.push_back(meta_path);
+
+    const std::filesystem::path warnings_path =
+        path.parent_path() / (path.stem().string() + "_warnings.csv");
+    std::vector<std::string> warning_lines = {"warning,message"};
+    for (const auto& [key, message] : warnings) {
+      warning_lines.push_back(csv_escape(key) + "," + csv_escape(message));
+    }
+    write_csv(warnings_path, warning_lines);
+    outputs.push_back(warnings_path);
 
     const std::filesystem::path kernels_path = path.parent_path() / (path.stem().string() + "_kernels.csv");
     std::vector<std::string> kernel_lines = {

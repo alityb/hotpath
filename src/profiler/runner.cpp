@@ -6,9 +6,14 @@
 #include <cctype>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,12 +22,29 @@
 #include <sqlite3.h>
 #include <sys/types.h>
 
+#include "rlprof/clock_control.h"
 #include "rlprof/profiler/parser.h"
 #include "rlprof/profiler/vllm_metrics.h"
 #include "rlprof/store.h"
 
 namespace rlprof::profiler {
 namespace {
+
+struct GpuTelemetrySample {
+  double sample_time = 0.0;
+  std::string driver_version;
+  std::string pstate;
+  std::string persistence_mode;
+  double sm_clock_mhz = 0.0;
+  double mem_clock_mhz = 0.0;
+  double temp_c = 0.0;
+  double power_draw_w = 0.0;
+  double power_limit_w = 0.0;
+  std::string throttle_active;
+  std::string sw_power_cap;
+  std::string sw_thermal_slowdown;
+  std::string hw_thermal_slowdown;
+};
 
 std::string run_command(const std::string& command) {
   std::array<char, 4096> buffer{};
@@ -101,6 +123,227 @@ std::string trim(std::string value) {
   return value;
 }
 
+std::vector<std::string> split_csv_line(const std::string& line) {
+  std::vector<std::string> fields;
+  std::stringstream stream(line);
+  std::string part;
+  while (std::getline(stream, part, ',')) {
+    fields.push_back(trim(part));
+  }
+  return fields;
+}
+
+double now_seconds() {
+  using Clock = std::chrono::system_clock;
+  const auto now = Clock::now().time_since_epoch();
+  return std::chrono::duration<double>(now).count();
+}
+
+std::optional<double> parse_double_field(const std::string& field) {
+  if (field.empty() || field == "[N/A]" || field == "N/A") {
+    return std::nullopt;
+  }
+  return std::stod(field);
+}
+
+std::optional<GpuTelemetrySample> query_gpu_telemetry() {
+  try {
+    const std::string output = trim(run_command(
+        "nvidia-smi --query-gpu="
+        "timestamp,driver_version,pstate,persistence_mode,"
+        "clocks.current.sm,clocks.current.memory,temperature.gpu,"
+        "power.draw,power.limit,"
+        "clocks_throttle_reasons.active,"
+        "clocks_throttle_reasons.sw_power_cap,"
+        "clocks_throttle_reasons.sw_thermal_slowdown,"
+        "clocks_throttle_reasons.hw_thermal_slowdown "
+        "--format=csv,noheader,nounits | head -n 1"));
+    const auto fields = split_csv_line(output);
+    if (fields.size() < 13) {
+      return std::nullopt;
+    }
+    const auto sm_clock = parse_double_field(fields[4]);
+    const auto mem_clock = parse_double_field(fields[5]);
+    const auto temp = parse_double_field(fields[6]);
+    const auto power_draw = parse_double_field(fields[7]);
+    const auto power_limit = parse_double_field(fields[8]);
+    if (!sm_clock.has_value() || !mem_clock.has_value() || !temp.has_value() ||
+        !power_draw.has_value() || !power_limit.has_value()) {
+      return std::nullopt;
+    }
+    return GpuTelemetrySample{
+        .sample_time = now_seconds(),
+        .driver_version = fields[1],
+        .pstate = fields[2],
+        .persistence_mode = fields[3],
+        .sm_clock_mhz = *sm_clock,
+        .mem_clock_mhz = *mem_clock,
+        .temp_c = *temp,
+        .power_draw_w = *power_draw,
+        .power_limit_w = *power_limit,
+        .throttle_active = fields[9],
+        .sw_power_cap = fields[10],
+        .sw_thermal_slowdown = fields[11],
+        .hw_thermal_slowdown = fields[12],
+    };
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+void write_nvidia_smi_snapshot(const std::filesystem::path& output_prefix) {
+  std::filesystem::path snapshot_path = output_prefix;
+  snapshot_path += "_nvidia_smi.xml";
+  const std::string command =
+      "nvidia-smi -q -x > " + snapshot_path.string() + " 2>/dev/null";
+  std::system(command.c_str());
+}
+
+std::vector<GpuTelemetrySample> poll_gpu_telemetry(
+    std::chrono::milliseconds interval,
+    const std::atomic<bool>& stop_flag) {
+  std::vector<GpuTelemetrySample> samples;
+  while (!stop_flag.load()) {
+    if (const auto sample = query_gpu_telemetry(); sample.has_value()) {
+      samples.push_back(*sample);
+    }
+
+    auto slept = std::chrono::milliseconds::zero();
+    while (!stop_flag.load() && slept < interval) {
+      constexpr auto kSlice = std::chrono::milliseconds(50);
+      std::this_thread::sleep_for(kSlice);
+      slept += kSlice;
+    }
+  }
+  return samples;
+}
+
+template <typename Getter>
+std::string summary_triplet(
+    const std::vector<GpuTelemetrySample>& samples,
+    Getter getter,
+    int precision = 0) {
+  if (samples.empty()) {
+    return "";
+  }
+  double min_value = std::numeric_limits<double>::max();
+  double max_value = std::numeric_limits<double>::lowest();
+  double sum = 0.0;
+  for (const auto& sample : samples) {
+    const double value = getter(sample);
+    min_value = std::min(min_value, value);
+    max_value = std::max(max_value, value);
+    sum += value;
+  }
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(precision)
+         << min_value << "," << (sum / samples.size()) << "," << max_value;
+  return stream.str();
+}
+
+template <typename Getter>
+double max_value(const std::vector<GpuTelemetrySample>& samples, Getter getter) {
+  double value = std::numeric_limits<double>::lowest();
+  for (const auto& sample : samples) {
+    value = std::max(value, getter(sample));
+  }
+  return value;
+}
+
+template <typename Getter>
+double min_value(const std::vector<GpuTelemetrySample>& samples, Getter getter) {
+  double value = std::numeric_limits<double>::max();
+  for (const auto& sample : samples) {
+    value = std::min(value, getter(sample));
+  }
+  return value;
+}
+
+std::map<std::string, std::string> measurement_metadata(
+    const std::vector<GpuTelemetrySample>& samples) {
+  std::map<std::string, std::string> metadata;
+  if (samples.empty()) {
+    return metadata;
+  }
+
+  std::set<std::string> pstates;
+  std::size_t throttle_active_samples = 0;
+  std::size_t power_cap_samples = 0;
+  std::size_t thermal_samples = 0;
+  for (const auto& sample : samples) {
+    pstates.insert(sample.pstate);
+    if (sample.throttle_active != "Not Active") {
+      ++throttle_active_samples;
+    }
+    if (sample.sw_power_cap == "Active") {
+      ++power_cap_samples;
+    }
+    if (sample.sw_thermal_slowdown == "Active" ||
+        sample.hw_thermal_slowdown == "Active") {
+      ++thermal_samples;
+    }
+  }
+
+  std::ostringstream pstates_joined;
+  for (auto it = pstates.begin(); it != pstates.end(); ++it) {
+    if (it != pstates.begin()) {
+      pstates_joined << ",";
+    }
+    pstates_joined << *it;
+  }
+
+  const double sm_min = min_value(samples, [](const auto& sample) { return sample.sm_clock_mhz; });
+  const double sm_max = max_value(samples, [](const auto& sample) { return sample.sm_clock_mhz; });
+  double sm_sum = 0.0;
+  double mem_sum = 0.0;
+  double power_sum = 0.0;
+  double temp_min = std::numeric_limits<double>::max();
+  double temp_max = std::numeric_limits<double>::lowest();
+  double mem_min = std::numeric_limits<double>::max();
+  double mem_max = std::numeric_limits<double>::lowest();
+  double power_peak = std::numeric_limits<double>::lowest();
+  double power_limit = samples.front().power_limit_w;
+  for (const auto& sample : samples) {
+    sm_sum += sample.sm_clock_mhz;
+    mem_sum += sample.mem_clock_mhz;
+    power_sum += sample.power_draw_w;
+    temp_min = std::min(temp_min, sample.temp_c);
+    temp_max = std::max(temp_max, sample.temp_c);
+    mem_min = std::min(mem_min, sample.mem_clock_mhz);
+    mem_max = std::max(mem_max, sample.mem_clock_mhz);
+    power_peak = std::max(power_peak, sample.power_draw_w);
+  }
+  const double sm_avg = sm_sum / samples.size();
+  const double mem_avg = mem_sum / samples.size();
+  const double power_avg = power_sum / samples.size();
+  const bool sm_clock_unstable = sm_avg > 0.0 && ((sm_max - sm_min) / sm_avg) > 0.10;
+
+  metadata["measurement_driver_version"] = samples.front().driver_version;
+  metadata["measurement_persistence_mode"] = samples.front().persistence_mode;
+  metadata["measurement_pstates"] = pstates_joined.str();
+  metadata["measurement_samples"] = std::to_string(samples.size());
+  metadata["measurement_sm_clock_min_mhz"] = std::to_string(sm_min);
+  metadata["measurement_sm_clock_avg_mhz"] = std::to_string(sm_avg);
+  metadata["measurement_sm_clock_max_mhz"] = std::to_string(sm_max);
+  metadata["measurement_mem_clock_min_mhz"] = std::to_string(mem_min);
+  metadata["measurement_mem_clock_avg_mhz"] = std::to_string(mem_avg);
+  metadata["measurement_mem_clock_max_mhz"] = std::to_string(mem_max);
+  metadata["measurement_temp_min_c"] = std::to_string(temp_min);
+  metadata["measurement_temp_max_c"] = std::to_string(temp_max);
+  metadata["measurement_power_draw_avg_w"] = std::to_string(power_avg);
+  metadata["measurement_power_draw_peak_w"] = std::to_string(power_peak);
+  metadata["measurement_power_limit_w"] = std::to_string(power_limit);
+  metadata["measurement_throttle_active_samples"] = std::to_string(throttle_active_samples);
+  metadata["measurement_power_capped_samples"] = std::to_string(power_cap_samples);
+  metadata["measurement_thermal_slowdown_samples"] = std::to_string(thermal_samples);
+  metadata["warning_sm_clock_unstable"] = sm_clock_unstable ? "true" : "false";
+  metadata["warning_any_clock_throttle"] = throttle_active_samples > 0 ? "true" : "false";
+  metadata["warning_power_capped"] = power_cap_samples > 0 ? "true" : "false";
+  metadata["warning_thermal_slowdown"] = thermal_samples > 0 ? "true" : "false";
+  metadata["warning_temp_high"] = temp_max >= 80.0 ? "true" : "false";
+  return metadata;
+}
+
 std::filesystem::path default_output_prefix(const ProfileConfig& config) {
   if (!config.output.empty()) {
     return config.output;
@@ -113,6 +356,13 @@ std::filesystem::path default_output_prefix(const ProfileConfig& config) {
 
 std::int64_t inferred_max_model_len(const ProfileConfig& config) {
   return std::max<std::int64_t>(2048, config.input_len + config.max_tokens);
+}
+
+std::string vllm_binary() {
+  if (std::filesystem::exists(".venv/bin/vllm")) {
+    return ".venv/bin/vllm";
+  }
+  return "vllm";
 }
 
 std::string make_session_name(const std::filesystem::path& output_prefix) {
@@ -128,22 +378,27 @@ std::string make_session_name(const std::filesystem::path& output_prefix) {
 
 ProfileRunResult run_profile(const ProfileConfig& config) {
   const std::filesystem::path output_prefix = default_output_prefix(config);
+  std::filesystem::path nvidia_smi_snapshot_path = output_prefix;
+  nvidia_smi_snapshot_path += "_nvidia_smi.xml";
   if (!output_prefix.parent_path().empty()) {
     std::filesystem::create_directories(output_prefix.parent_path());
   }
 
   const std::string server_url = "http://127.0.0.1:" + std::to_string(config.port);
   const std::string gpu_name = trim(run_command("nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1"));
-  const std::string vllm_version = trim(run_command("vllm --version"));
+  const rlprof::ClockPolicyInfo clock_policy = rlprof::query_clock_policy();
+  const std::string vllm_path = vllm_binary();
+  const std::string vllm_version = trim(run_command(vllm_path + " --version"));
   const std::int64_t max_model_len = inferred_max_model_len(config);
   const std::string session_name = make_session_name(output_prefix);
+  write_nvidia_smi_snapshot(output_prefix);
 
   const std::string serve_command =
-      "VLLM_WORKER_MULTIPROC_METHOD=spawn nsys profile --trace=cuda,osrt "
+      "VLLM_WORKER_MULTIPROC_METHOD=spawn nsys profile --trace=cuda,nvtx,osrt "
       "--sample=none --cpuctxsw=none --export=sqlite "
       "--force-overwrite=true --session-new " + session_name +
       " --start-later=true -o " + output_prefix.string() +
-      " vllm serve " + config.model +
+      " " + vllm_path + " serve " + config.model +
       " --port " + std::to_string(config.port) +
       " --tensor-parallel-size " + std::to_string(config.tp) +
       " --max-model-len " + std::to_string(max_model_len) +
@@ -152,7 +407,9 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
 
   std::atomic<bool> stop_flag{false};
   std::vector<MetricSample> metrics;
+  std::vector<GpuTelemetrySample> gpu_samples;
   std::thread metrics_thread;
+  std::thread gpu_thread;
 
   try {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.startup_timeout_s);
@@ -179,6 +436,11 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
           std::chrono::milliseconds(config.metrics_interval_ms),
           stop_flag);
     });
+    gpu_thread = std::thread([&]() {
+      gpu_samples = poll_gpu_telemetry(
+          std::chrono::milliseconds(config.metrics_interval_ms),
+          stop_flag);
+    });
 
     const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe");
     const std::string traffic_command =
@@ -194,6 +456,9 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
     stop_flag.store(true);
     if (metrics_thread.joinable()) {
       metrics_thread.join();
+    }
+    if (gpu_thread.joinable()) {
+      gpu_thread.join();
     }
     run_command("nsys stop --session=" + session_name);
     stop_process(server_pid);
@@ -255,7 +520,25 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
         {"trust_remote_code", config.trust_remote_code ? "true" : "false"},
         {"port", std::to_string(config.port)},
         {"tp", std::to_string(config.tp)},
+        {"measurement_nvidia_smi_xml", nvidia_smi_snapshot_path.string()},
+        {"measurement_gpu_clock_policy", rlprof::render_clock_policy(clock_policy)},
+        {"measurement_gpu_clocks_locked", clock_policy.gpu_clocks_locked ? "true" : "false"},
+        {"measurement_gpu_clock_policy_query_ok", clock_policy.query_ok ? "true" : "false"},
     };
+    if (clock_policy.max_sm_clock_mhz.has_value()) {
+      profile.meta["measurement_gpu_max_sm_clock_mhz"] =
+          std::to_string(*clock_policy.max_sm_clock_mhz);
+    }
+    if (clock_policy.locked_sm_clock_mhz.has_value()) {
+      profile.meta["measurement_gpu_locked_sm_clock_mhz"] =
+          std::to_string(*clock_policy.locked_sm_clock_mhz);
+    }
+    if (clock_policy.query_ok && !clock_policy.gpu_clocks_locked) {
+      profile.meta["warning_gpu_clocks_unlocked"] = "true";
+    }
+    for (const auto& [key, value] : measurement_metadata(gpu_samples)) {
+      profile.meta[key] = value;
+    }
     profile.kernels = kernels;
     profile.metrics = metrics;
     profile.metrics_summary = summaries;
@@ -277,6 +560,9 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
     stop_flag.store(true);
     if (metrics_thread.joinable()) {
       metrics_thread.join();
+    }
+    if (gpu_thread.joinable()) {
+      gpu_thread.join();
     }
     std::system(("nsys stop --session=" + session_name + " > /dev/null 2>&1").c_str());
     stop_process(server_pid);

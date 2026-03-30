@@ -35,6 +35,8 @@ int main() {
       .meta = {
           {"model_name", "Qwen/Qwen3-8B"},
           {"gpu_name", "NVIDIA A10G, 24GB"},
+          {"warning_gpu_clocks_unlocked", "true"},
+          {"warning_temp_high", "true"},
       },
       .kernels = {
           {
@@ -68,7 +70,7 @@ int main() {
   rlprof::save_profile(db_path, profile);
 
   const auto csv_outputs = rlprof::export_profile(db_path, "csv");
-  expect_true(csv_outputs.size() == 5, "csv export should write all profile tables");
+  expect_true(csv_outputs.size() == 6, "csv export should write all profile tables and warnings");
   const auto json_outputs = rlprof::export_profile(db_path, "json");
   expect_true(json_outputs.size() == 1, "json export should write one file");
 
@@ -88,7 +90,18 @@ int main() {
       traffic_csv.find("total_requests,32") != std::string::npos,
       "traffic csv should contain traffic stats");
 
+  const std::string warnings_csv = read_text(temp_dir / "profile_warnings.csv");
+  expect_true(
+      warnings_csv.find("warning_gpu_clocks_unlocked") != std::string::npos,
+      "warnings csv should contain unlocked clock warnings");
+  expect_true(
+      warnings_csv.find("warning_temp_high") != std::string::npos,
+      "warnings csv should contain exported warnings");
+
   const std::string json_text = read_text(temp_dir / "profile.json");
+  expect_true(
+      json_text.find("\"warnings\"") != std::string::npos,
+      "json export should contain warnings");
   expect_true(
       json_text.find("\"vllm_metrics_summary\"") != std::string::npos,
       "json export should contain metrics summary");

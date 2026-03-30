@@ -28,10 +28,15 @@ int main() {
       categorize("vllm::act_and_mul_kernel<bf16,silu,true>"),
       "activation");
   expect_equal(
+      categorize("_selective_scan_update_kernel"),
+      "mamba");
+  expect_equal(
       categorize("triton_red_fused__to_copy_add_mean_mul_pow_rsqrt_2"),
-      "norm");
+      "other");
   expect_equal(categorize("_topk_topp_kernel"), "sampling");
   expect_equal(categorize("flash_fwd_splitkv_bf16_sm80"), "attention");
+  expect_equal(categorize("vectorized_elementwise_kernel"), "other");
+  expect_equal(categorize("triton_poi_fused_4"), "other");
   expect_equal(categorize("some_unknown_kernel"), "other");
 
   return 0;

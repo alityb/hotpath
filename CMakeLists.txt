@@ -15,8 +15,10 @@ add_library(
   src/bench/kernels/silu_mul.cpp
   src/bench/registry.cpp
   src/bench/runner.cpp
+  src/clock_control.cpp
   src/diff.cpp
   src/export.cpp
+  src/stability.cpp
   src/traffic.cpp
   src/profiler/categorizer.cpp
   src/profiler/parser.cpp
@@ -89,6 +91,27 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_bench PRIVATE rlprof_core)
   add_test(NAME test_bench COMMAND test_bench)
+
+  add_executable(
+    test_bench_json
+    cpp_tests/test_bench_json.cpp
+  )
+  target_link_libraries(test_bench_json PRIVATE rlprof_core)
+  add_test(NAME test_bench_json COMMAND test_bench_json)
+
+  add_executable(
+    test_stability
+    cpp_tests/test_stability.cpp
+  )
+  target_link_libraries(test_stability PRIVATE rlprof_core)
+  add_test(NAME test_stability COMMAND test_stability)
+
+  add_executable(
+    test_clock_control
+    cpp_tests/test_clock_control.cpp
+  )
+  target_link_libraries(test_clock_control PRIVATE rlprof_core)
+  add_test(NAME test_clock_control COMMAND test_clock_control)
 
   add_executable(
     test_export

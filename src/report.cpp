@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <map>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -96,6 +97,44 @@ std::string metric_label(std::string_view metric) {
   return std::string(metric);
 }
 
+std::optional<double> metadata_double(
+    const std::map<std::string, std::string>& metadata,
+    const std::string& key) {
+  const auto it = metadata.find(key);
+  if (it == metadata.end() || it->second.empty()) {
+    return std::nullopt;
+  }
+  return std::stod(it->second);
+}
+
+std::string metadata_value(
+    const std::map<std::string, std::string>& metadata,
+    const std::string& key,
+    const std::string& fallback = "-") {
+  const auto it = metadata.find(key);
+  return it == metadata.end() || it->second.empty() ? fallback : it->second;
+}
+
+std::vector<std::string> warning_messages(const std::map<std::string, std::string>& metadata) {
+  std::vector<std::string> warnings;
+  const auto append_if = [&](const std::string& key, const std::string& message) {
+    const auto it = metadata.find(key);
+    if (it != metadata.end() && it->second == "true") {
+      warnings.push_back(message);
+    }
+  };
+
+  append_if("warning_sm_clock_unstable", "sm clock varied materially during measurement");
+  append_if("warning_power_capped", "power cap throttling observed");
+  append_if("warning_thermal_slowdown", "thermal throttling observed");
+  append_if("warning_any_clock_throttle", "clock throttling reasons were active");
+  append_if("warning_temp_high", "gpu temperature reached high operating range");
+  append_if(
+      "warning_gpu_clocks_unlocked",
+      "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements. See: docs.nvidia.com/deploy/nvidia-smi/index.html");
+  return warnings;
+}
+
 void append_row(
     std::ostringstream& output,
     const std::vector<std::pair<std::string, std::size_t>>& columns,
@@ -116,6 +155,7 @@ void append_row(
 
 std::string render_report(
     const ReportMeta& meta,
+    const std::map<std::string, std::string>& metadata,
     const std::vector<profiler::KernelRecord>& kernels,
     const std::vector<MetricSummary>& metrics_summary,
     const TrafficStats& traffic_stats) {
@@ -124,6 +164,82 @@ std::string render_report(
          << " | " << meta.vllm_version << "\n";
   output << "workload: " << meta.prompts << " prompts, " << meta.rollouts
          << " rollouts/prompt, " << meta.max_tokens << " max tokens\n\n";
+  output << "category buckets use conservative substring matching; raw kernel names are authoritative\n\n";
+
+  const auto warnings = warning_messages(metadata);
+  if (!warnings.empty()) {
+    output << "MEASUREMENT WARNINGS\n";
+    for (const auto& warning : warnings) {
+      output << "- " << warning << "\n";
+    }
+    output << "\n";
+  }
+
+  const auto sm_min = metadata_double(metadata, "measurement_sm_clock_min_mhz");
+  const auto sm_avg = metadata_double(metadata, "measurement_sm_clock_avg_mhz");
+  const auto sm_max = metadata_double(metadata, "measurement_sm_clock_max_mhz");
+  const auto mem_min = metadata_double(metadata, "measurement_mem_clock_min_mhz");
+  const auto mem_avg = metadata_double(metadata, "measurement_mem_clock_avg_mhz");
+  const auto mem_max = metadata_double(metadata, "measurement_mem_clock_max_mhz");
+  const auto temp_min = metadata_double(metadata, "measurement_temp_min_c");
+  const auto temp_max = metadata_double(metadata, "measurement_temp_max_c");
+  const auto power_avg = metadata_double(metadata, "measurement_power_draw_avg_w");
+  const auto power_peak = metadata_double(metadata, "measurement_power_draw_peak_w");
+  const auto power_limit = metadata_double(metadata, "measurement_power_limit_w");
+
+  if (sm_avg.has_value() || temp_max.has_value()) {
+    output << "MEASUREMENT CONTEXT\n";
+    const std::vector<std::pair<std::string, std::size_t>> context_columns = {
+        {"metric", 30},
+        {"value", 24},
+    };
+    append_row(output, context_columns, {"metric", "value"});
+    output << repeat('-', 56) << '\n';
+    append_row(output, context_columns, {"driver version", metadata_value(metadata, "measurement_driver_version")});
+    append_row(output, context_columns, {"persistence mode", metadata_value(metadata, "measurement_persistence_mode")});
+    append_row(output, context_columns, {"gpu clock policy", metadata_value(metadata, "measurement_gpu_clock_policy")});
+    if (metadata_value(metadata, "measurement_gpu_max_sm_clock_mhz", "").size() > 0) {
+      append_row(
+          output,
+          context_columns,
+          {"max supported sm clock mhz",
+           metadata_value(metadata, "measurement_gpu_max_sm_clock_mhz")});
+    }
+    append_row(output, context_columns, {"observed pstate(s)", metadata_value(metadata, "measurement_pstates")});
+    append_row(output, context_columns, {"gpu telemetry samples", metadata_value(metadata, "measurement_samples")});
+    if (sm_avg.has_value()) {
+      append_row(
+          output,
+          context_columns,
+          {"sm clock (min/avg/max mhz)",
+           format_fixed(*sm_min, 0) + " / " + format_fixed(*sm_avg, 0) + " / " +
+               format_fixed(*sm_max, 0)});
+    }
+    if (mem_avg.has_value()) {
+      append_row(
+          output,
+          context_columns,
+          {"mem clock (min/avg/max mhz)",
+           format_fixed(*mem_min, 0) + " / " + format_fixed(*mem_avg, 0) + " / " +
+               format_fixed(*mem_max, 0)});
+    }
+    if (temp_max.has_value()) {
+      append_row(
+          output,
+          context_columns,
+          {"temperature (min/max c)",
+           format_fixed(*temp_min, 0) + " / " + format_fixed(*temp_max, 0)});
+    }
+    if (power_avg.has_value()) {
+      append_row(
+          output,
+          context_columns,
+          {"power draw (avg/peak/limit w)",
+           format_fixed(*power_avg, 1) + " / " + format_fixed(*power_peak, 1) + " / " +
+               format_fixed(*power_limit, 1)});
+    }
+    output << '\n';
+  }
 
   const std::int64_t total_ns = std::accumulate(
       kernels.begin(),

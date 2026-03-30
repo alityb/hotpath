@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,6 +38,7 @@ struct TrafficStats {
 
 std::string render_report(
     const ReportMeta& meta,
+    const std::map<std::string, std::string>& metadata,
     const std::vector<profiler::KernelRecord>& kernels,
     const std::vector<MetricSummary>& metrics_summary,
     const TrafficStats& traffic_stats);

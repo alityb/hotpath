@@ -1,4 +1,5 @@
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
@@ -12,8 +13,10 @@
 #include "rlprof/export.h"
 #include "rlprof/bench/registry.h"
 #include "rlprof/bench/runner.h"
+#include "rlprof/clock_control.h"
 #include "rlprof/profiler/runner.h"
 #include "rlprof/report.h"
+#include "rlprof/stability.h"
 #include "rlprof/store.h"
 #include "rlprof/traffic.h"
 
@@ -50,6 +53,31 @@ std::filesystem::path latest_profile_path() {
     throw std::runtime_error("No profile database found in .rlprof/");
   }
   return latest;
+}
+
+std::string sanitize_model_name(std::string value) {
+  std::replace(value.begin(), value.end(), '/', '_');
+  return value;
+}
+
+std::filesystem::path repeat_output_base(const rlprof::profiler::ProfileConfig& config) {
+  if (!config.output.empty()) {
+    return config.output;
+  }
+  const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+  return std::filesystem::path(".rlprof") /
+         (sanitize_model_name(config.model) + "_" + std::to_string(now));
+}
+
+std::filesystem::path append_repeat_suffix(
+    const std::filesystem::path& base,
+    std::int64_t repeat_index) {
+  const std::string suffix = "_r" + std::to_string(repeat_index);
+  if (base.extension().empty()) {
+    return std::filesystem::path(base.string() + suffix);
+  }
+  return base.parent_path() /
+         (base.stem().string() + suffix + base.extension().string());
 }
 
 rlprof::ReportMeta to_report_meta(const std::map<std::string, std::string>& meta) {
@@ -119,6 +147,7 @@ std::string render_traffic_json(const rlprof::TrafficStats& stats) {
 
 int handle_profile(const Args& args) {
   rlprof::profiler::ProfileConfig config;
+  std::int64_t repeats = 1;
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--model") {
       config.model = require_value(args, i, "--model");
@@ -140,8 +169,10 @@ int handle_profile(const Args& args) {
       config.trust_remote_code = true;
     } else if (args[i] == "--output") {
       config.output = require_value(args, i, "--output");
+    } else if (args[i] == "--repeat") {
+      repeats = std::stoll(require_value(args, i, "--repeat"));
     } else if (args[i] == "--help") {
-      std::cout << "Usage: rlprof profile --model MODEL [options]\n";
+      std::cout << "Usage: rlprof profile --model MODEL [options] [--repeat N]\n";
       return 0;
     }
   }
@@ -150,8 +181,42 @@ int handle_profile(const Args& args) {
     throw std::runtime_error("--model is required");
   }
 
-  const auto result = rlprof::profiler::run_profile(config);
-  std::cout << result.db_path << "\n";
+  if (repeats <= 0) {
+    throw std::runtime_error("--repeat must be > 0");
+  }
+
+  if (repeats == 1) {
+    const auto result = rlprof::profiler::run_profile(config);
+    std::cout << result.db_path << "\n";
+    return 0;
+  }
+
+  const std::filesystem::path output_base = repeat_output_base(config);
+  std::vector<std::filesystem::path> db_paths;
+  std::vector<rlprof::ProfileData> profiles;
+  db_paths.reserve(static_cast<std::size_t>(repeats));
+  profiles.reserve(static_cast<std::size_t>(repeats));
+
+  for (std::int64_t run_index = 1; run_index <= repeats; ++run_index) {
+    auto run_config = config;
+    run_config.output = append_repeat_suffix(output_base, run_index);
+    const auto result = rlprof::profiler::run_profile(run_config);
+    db_paths.push_back(result.db_path);
+    profiles.push_back(rlprof::load_profile(result.db_path));
+    std::cout << result.db_path << "\n";
+  }
+
+  const auto& final_profile = profiles.back();
+  std::cout << "\n";
+  std::cout << rlprof::render_report(
+      to_report_meta(final_profile.meta),
+      final_profile.meta,
+      final_profile.kernels,
+      final_profile.metrics_summary,
+      final_profile.traffic_stats);
+  std::cout << "\n";
+  std::cout << rlprof::render_stability_report(
+      rlprof::compute_stability_report(profiles));
   return 0;
 }
 
@@ -161,6 +226,7 @@ int handle_report(const Args& args) {
   const auto profile = rlprof::load_profile(path);
   std::cout << rlprof::render_report(
       to_report_meta(profile.meta),
+      profile.meta,
       profile.kernels,
       profile.metrics_summary,
       profile.traffic_stats);
@@ -238,13 +304,28 @@ std::string bench_helper_command(
     const std::string& shapes,
     const std::string& dtype,
     std::int64_t warmup,
-    std::int64_t n_iter) {
+    std::int64_t n_iter,
+    std::int64_t repeats) {
   return shell_escape(".venv/bin/python") + " " + shell_escape("tools/bench_cuda.py") +
-         " --kernel " + shell_escape(kernel) +
-         " --shapes " + shell_escape(shapes) +
-         " --dtype " + shell_escape(dtype) +
-         " --warmup " + shell_escape(std::to_string(warmup)) +
-         " --n-iter " + shell_escape(std::to_string(n_iter)) + " 2>&1";
+        " --kernel " + shell_escape(kernel) +
+        " --shapes " + shell_escape(shapes) +
+        " --dtype " + shell_escape(dtype) +
+        " --warmup " + shell_escape(std::to_string(warmup)) +
+        " --n-iter " + shell_escape(std::to_string(n_iter)) +
+         " --repeats " + shell_escape(std::to_string(repeats)) + " 2>&1";
+}
+
+bool gpu_bench_available() {
+  if (!std::filesystem::exists(".venv/bin/python") ||
+      !std::filesystem::exists("tools/bench_cuda.py")) {
+    return false;
+  }
+  const std::string probe =
+      ".venv/bin/python -c " +
+      shell_escape(
+          "import torch, vllm; raise SystemExit(0 if torch.cuda.is_available() else 1)") +
+      " > /dev/null 2>&1";
+  return std::system(probe.c_str()) == 0;
 }
 
 int handle_bench(const Args& args) {
@@ -253,6 +334,7 @@ int handle_bench(const Args& args) {
   std::string dtype = "bf16";
   std::int64_t warmup = 20;
   std::int64_t n_iter = 200;
+  std::int64_t repeats = 5;
 
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--kernel") {
@@ -265,6 +347,8 @@ int handle_bench(const Args& args) {
       warmup = std::stoll(require_value(args, i, "--warmup"));
     } else if (args[i] == "--n-iter") {
       n_iter = std::stoll(require_value(args, i, "--n-iter"));
+    } else if (args[i] == "--repeats") {
+      repeats = std::stoll(require_value(args, i, "--repeats"));
     }
   }
 
@@ -272,13 +356,15 @@ int handle_bench(const Args& args) {
     throw std::runtime_error("--kernel is required");
   }
 
-  if (std::filesystem::exists(".venv/bin/python") &&
-      std::filesystem::exists("tools/bench_cuda.py")) {
-    std::cout << run_command_capture(
-        bench_helper_command(kernel, shapes, dtype, warmup, n_iter));
+  if (gpu_bench_available()) {
+    const auto output = rlprof::bench::parse_bench_json(
+        run_command_capture(
+            bench_helper_command(kernel, shapes, dtype, warmup, n_iter, repeats)));
+    std::cout << rlprof::bench::render_bench_output(output);
     return 0;
   }
 
+  std::cerr << "warning: torch/vllm CUDA bench helper unavailable, falling back to native CPU stubs\n";
   rlprof::bench::register_builtin_kernels();
   const auto results = rlprof::bench::benchmark_category(
       kernel,
@@ -290,10 +376,40 @@ int handle_bench(const Args& args) {
   return 0;
 }
 
+int handle_lock_clocks(const Args& args) {
+  std::optional<std::int64_t> freq_mhz;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    if (args[i] == "--freq") {
+      freq_mhz = std::stoll(require_value(args, i, "--freq"));
+    } else if (args[i] == "--help") {
+      std::cout << "Usage: rlprof lock-clocks [--freq MHZ]\n";
+      return 0;
+    }
+  }
+
+  rlprof::lock_gpu_clocks(freq_mhz);
+  const std::int64_t effective_freq =
+      freq_mhz.value_or(rlprof::query_max_sm_clock_mhz());
+  std::cout << "GPU clocks locked to " << effective_freq << " MHz\n";
+  return 0;
+}
+
+int handle_unlock_clocks(const Args& args) {
+  if (args.size() > 1 && args[1] == "--help") {
+    std::cout << "Usage: rlprof unlock-clocks\n";
+    return 0;
+  }
+  rlprof::unlock_gpu_clocks();
+  std::cout << "GPU clocks unlocked\n";
+  return 0;
+}
+
 void print_help() {
   std::cout << "Usage: rlprof <command> [options]\n\n"
             << "Commands:\n"
-            << "  profile\n"
+            << "  profile --model MODEL [options] [--repeat N]\n"
+            << "  lock-clocks [--freq MHZ]\n"
+            << "  unlock-clocks\n"
             << "  report [path]\n"
             << "  export [path] --format csv|json\n"
             << "  diff <a.db> <b.db>\n"
@@ -319,6 +435,14 @@ int main(int argc, char** argv) {
 
     if (command == "report") {
       return handle_report(args);
+    }
+
+    if (command == "lock-clocks") {
+      return handle_lock_clocks(args);
+    }
+
+    if (command == "unlock-clocks") {
+      return handle_unlock_clocks(args);
     }
 
     if (command == "export") {

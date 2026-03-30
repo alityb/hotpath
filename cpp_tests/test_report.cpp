@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,24 @@ int main() {
           .prompts = 128,
           .rollouts = 8,
           .max_tokens = 4096,
+      },
+      std::map<std::string, std::string>{
+          {"measurement_driver_version", "570.12"},
+          {"measurement_gpu_clock_policy", "unlocked"},
+          {"measurement_gpu_max_sm_clock_mhz", "1710"},
+          {"measurement_persistence_mode", "Enabled"},
+          {"measurement_pstates", "P0"},
+          {"measurement_samples", "5"},
+          {"measurement_sm_clock_min_mhz", "1200"},
+          {"measurement_sm_clock_avg_mhz", "1350"},
+          {"measurement_sm_clock_max_mhz", "1500"},
+          {"measurement_temp_min_c", "61"},
+          {"measurement_temp_max_c", "83"},
+          {"measurement_power_draw_avg_w", "180"},
+          {"measurement_power_draw_peak_w", "220"},
+          {"measurement_power_limit_w", "300"},
+          {"warning_gpu_clocks_unlocked", "true"},
+          {"warning_temp_high", "true"},
       },
       std::vector<rlprof::profiler::KernelRecord>{
           {
@@ -92,6 +111,15 @@ int main() {
       });
 
   expect_contains(report, "rlprof | Qwen/Qwen3-8B | NVIDIA A10G | v0.1.0");
+  expect_contains(report, "conservative substring matching");
+  expect_contains(report, "MEASUREMENT WARNINGS");
+  expect_contains(report, "GPU clocks are not locked. Run `rlprof lock-clocks`");
+  expect_contains(report, "gpu temperature reached high operating range");
+  expect_contains(report, "MEASUREMENT CONTEXT");
+  expect_contains(report, "gpu clock policy");
+  expect_contains(report, "unlocked");
+  expect_contains(report, "max supported sm clock mhz");
+  expect_contains(report, "1350");
   expect_contains(report, "KERNEL BREAKDOWN BY CATEGORY");
   expect_contains(report, "gemm");
   expect_contains(report, "attention");
