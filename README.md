@@ -36,14 +36,32 @@ Python environment for bench and live profiling:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install aiohttp pytest torch triton vllm
+.venv/bin/pip install pytest torch triton vllm
 
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+## Install
+
+```bash
+python3 -m pip install .
+```
+
+This installs the `rlprof` command into the active Python environment. For GPU benchmarking support:
+
+```bash
+python3 -m pip install '.[bench]'
+```
+
 ## Commands
+
+If you run `rlprof`, `rlprof profile`, `rlprof bench`, `rlprof report`,
+`rlprof diff`, or `rlprof export` without their required arguments,
+`rlprof` now falls back to a sequential interactive prompt flow instead
+of a fullscreen UI. Passing the usual flags still skips prompts and runs
+non-interactively.
 
 ### Profile
 

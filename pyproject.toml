@@ -1,26 +1,31 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = [
+    "cmake>=3.28",
+    "ninja>=1.11",
+    "scikit-build-core>=0.10",
+]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "rlprof"
 version = "0.1.0"
 description = "Profile vLLM inference under RL training workloads."
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "aiohttp",
-    "click",
-    "rich",
-]
+dependencies = []
 
 [project.optional-dependencies]
 bench = [
     "torch>=2.2",
     "triton>=2.2",
+    "vllm",
 ]
 
 [project.scripts]
-rlprof = "rlprof.cli:main"
+rlprof = "rlprof_py.cli:main"
+
+[tool.scikit-build]
+wheel.packages = ["rlprof_py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

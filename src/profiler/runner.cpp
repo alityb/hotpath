@@ -374,9 +374,15 @@ std::string make_session_name(const std::filesystem::path& output_prefix) {
   return session;
 }
 
+void notify_progress(const ProgressCallback& progress, const std::string& status) {
+  if (progress) {
+    progress(status);
+  }
+}
+
 }  // namespace
 
-ProfileRunResult run_profile(const ProfileConfig& config) {
+ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progress) {
   const std::filesystem::path output_prefix = default_output_prefix(config);
   std::filesystem::path nvidia_smi_snapshot_path = output_prefix;
   nvidia_smi_snapshot_path += "_nvidia_smi.xml";
@@ -391,6 +397,7 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
   const std::string vllm_version = trim(run_command(vllm_path + " --version"));
   const std::int64_t max_model_len = inferred_max_model_len(config);
   const std::string session_name = make_session_name(output_prefix);
+  notify_progress(progress, "Starting vLLM server...");
   write_nvidia_smi_snapshot(output_prefix);
 
   const std::string serve_command =
@@ -412,6 +419,7 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
   std::thread gpu_thread;
 
   try {
+    notify_progress(progress, "Waiting for server ready...");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.startup_timeout_s);
     bool ready = false;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -428,6 +436,7 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
           std::to_string(config.startup_timeout_s) + " seconds");
     }
 
+    notify_progress(progress, "Collecting nsys trace...");
     run_command("nsys start --session=" + session_name);
 
     metrics_thread = std::thread([&]() {
@@ -442,6 +451,10 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
           stop_flag);
     });
 
+    notify_progress(
+        progress,
+        "Firing RL traffic (" +
+            std::to_string(config.prompts * config.rollouts) + " requests)...");
     const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe");
     const std::string traffic_command =
         self.string() +
@@ -503,6 +516,7 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
     if (!wait_for_kernel_table(sqlite_path, std::chrono::seconds(30))) {
       throw std::runtime_error("timed out waiting for nsys sqlite export readiness: " + sqlite_path.string());
     }
+    notify_progress(progress, "Parsing kernel data...");
     const std::vector<KernelRecord> kernels = parse_nsys_sqlite(sqlite_path);
     const std::vector<MetricSummary> summaries = summarize_samples(metrics);
 
@@ -546,6 +560,7 @@ ProfileRunResult run_profile(const ProfileConfig& config) {
 
     std::filesystem::path db_path = output_prefix;
     db_path.replace_extension(".db");
+    notify_progress(progress, "Saving profile...");
     save_profile(db_path, profile);
 
     return ProfileRunResult{

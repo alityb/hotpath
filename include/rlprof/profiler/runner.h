@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -35,6 +36,10 @@ struct ProfileRunResult {
   TrafficStats traffic_stats;
 };
 
-ProfileRunResult run_profile(const ProfileConfig& config);
+using ProgressCallback = std::function<void(const std::string&)>;
+
+ProfileRunResult run_profile(
+    const ProfileConfig& config,
+    ProgressCallback progress = {});
 
 }  // namespace rlprof::profiler

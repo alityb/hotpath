@@ -40,6 +40,24 @@ target_link_libraries(
     SQLite::SQLite3
 )
 
+add_library(
+  rlprof_interactive
+  src/interactive.cpp
+)
+
+target_include_directories(
+  rlprof_interactive
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  rlprof_interactive
+  PUBLIC
+    rlprof_core
+)
+
 include(CTest)
 
 if(BUILD_TESTING)
@@ -119,10 +137,29 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_export PRIVATE rlprof_core)
   add_test(NAME test_export COMMAND test_export)
+
+  add_executable(
+    test_interactive
+    cpp_tests/test_interactive.cpp
+  )
+  target_link_libraries(test_interactive PRIVATE rlprof_interactive)
+  add_test(NAME test_interactive COMMAND test_interactive)
 endif()
 
 add_executable(
   rlprof
   src/main.cpp
 )
-target_link_libraries(rlprof PRIVATE rlprof_core)
+target_include_directories(
+  rlprof
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(rlprof PRIVATE rlprof_interactive)
+
+include(GNUInstallDirs)
+
+install(
+  TARGETS rlprof
+  RUNTIME DESTINATION rlprof_py/bin
+)
