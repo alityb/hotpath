@@ -13,6 +13,7 @@ namespace rlprof {
 
 struct MetricSample {
   double sample_time;
+  std::string source;
   std::string metric;
   double value;
 };

@@ -33,16 +33,18 @@ using Args = std::vector<std::string>;
 struct ProfileCommandOptions {
   rlprof::profiler::ProfileConfig config;
   std::int64_t repeats = 1;
+  bool assume_yes = false;
   bool show_help = false;
 };
 
 struct BenchCommandOptions {
   std::string kernel;
-  std::string shapes = "1x4096,64x4096,256x4096";
+  std::string shapes = "64x4096,256x4096";
   std::string dtype = "bf16";
   std::int64_t warmup = 20;
   std::int64_t n_iter = 200;
   std::int64_t repeats = 5;
+  bool assume_yes = false;
   bool show_help = false;
 };
 
@@ -115,6 +117,19 @@ std::filesystem::path append_repeat_suffix(
          (base.stem().string() + suffix + base.extension().string());
 }
 
+void remove_profile_artifacts(const std::filesystem::path& base) {
+  std::error_code ec;
+  const auto remove_if_exists = [&](const std::filesystem::path& path) {
+    std::filesystem::remove(path, ec);
+    ec.clear();
+  };
+  remove_if_exists(base);
+  remove_if_exists(base.string() + ".db");
+  remove_if_exists(base.string() + ".sqlite");
+  remove_if_exists(base.string() + ".nsys-rep");
+  remove_if_exists(base.string() + "_nvidia_smi.xml");
+}
+
 rlprof::ReportMeta to_report_meta(const std::map<std::string, std::string>& meta) {
   const auto get = [&](const std::string& key, const std::string& fallback = "") {
     const auto it = meta.find(key);
@@ -159,6 +174,19 @@ std::string trim(std::string value) {
     ++start;
   }
   return value.substr(start);
+}
+
+std::vector<std::string> split_csv_list(const std::string& value) {
+  std::vector<std::string> items;
+  std::stringstream stream(value);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    item = trim(item);
+    if (!item.empty()) {
+      items.push_back(item);
+    }
+  }
+  return items;
 }
 
 std::string run_command_capture(const std::string& command) {
@@ -212,12 +240,18 @@ ProfileCommandOptions parse_profile_args(const Args& args) {
       options.config.port = std::stoll(require_value(args, i, "--port"));
     } else if (args[i] == "--tp") {
       options.config.tp = std::stoll(require_value(args, i, "--tp"));
+    } else if (args[i] == "--peer-servers") {
+      options.config.peer_servers = split_csv_list(require_value(args, i, "--peer-servers"));
     } else if (args[i] == "--trust-remote-code") {
       options.config.trust_remote_code = true;
     } else if (args[i] == "--output") {
       options.config.output = require_value(args, i, "--output");
     } else if (args[i] == "--repeat") {
       options.repeats = std::stoll(require_value(args, i, "--repeat"));
+    } else if (args[i] == "--discard-first-run") {
+      options.config.discard_first_run = true;
+    } else if (args[i] == "--yes") {
+      options.assume_yes = true;
     } else if (args[i] == "--help") {
       options.show_help = true;
     }
@@ -237,6 +271,19 @@ std::string run_profile_command(
   }
 
   std::ostringstream output;
+  if (options.config.discard_first_run) {
+    auto warmup_config = options.config;
+    const auto output_base = repeat_output_base(options.config);
+    warmup_config.output = append_repeat_suffix(output_base, 0);
+    const auto warmup_progress = [&](const std::string& status) {
+      if (progress) {
+        progress("[warmup] " + status);
+      }
+    };
+    rlprof::profiler::run_profile(warmup_config, warmup_progress);
+    remove_profile_artifacts(warmup_config.output);
+  }
+
   if (options.repeats == 1) {
     const auto result = rlprof::profiler::run_profile(options.config, progress);
     output << result.db_path << "\n";
@@ -282,7 +329,9 @@ std::string run_profile_command(
 int handle_profile(const Args& args) {
   const auto options = parse_profile_args(args);
   if (options.show_help) {
-    std::cout << "Usage: rlprof profile --model MODEL [options] [--repeat N]\n";
+    std::cout << "Usage: rlprof profile --model MODEL [options] [--repeat N]\n"
+              << "       optional: --peer-servers URL1,URL2,...\n"
+              << "       flags: --discard-first-run --yes\n";
     return 0;
   }
   std::cout << run_profile_command(options);
@@ -336,6 +385,7 @@ int handle_diff(const Args& args) {
 
 int handle_traffic(const Args& args) {
   std::string server;
+  std::vector<std::string> servers;
   std::int64_t prompts = 128;
   std::int64_t rollouts_per_prompt = 8;
   std::int64_t max_tokens = 4096;
@@ -345,6 +395,8 @@ int handle_traffic(const Args& args) {
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--server") {
       server = require_value(args, i, "--server");
+    } else if (args[i] == "--servers") {
+      servers = split_csv_list(require_value(args, i, "--servers"));
     } else if (args[i] == "--prompts") {
       prompts = std::stoll(require_value(args, i, "--prompts"));
     } else if (args[i] == "--rollouts-per-prompt") {
@@ -358,20 +410,26 @@ int handle_traffic(const Args& args) {
     }
   }
 
-  if (server.empty()) {
-    throw std::runtime_error("--server is required");
+  if (servers.empty() && !server.empty()) {
+    servers.push_back(server);
+  }
+
+  if (servers.empty()) {
+    throw std::runtime_error("--server or --servers is required");
   }
 
   const auto run = rlprof::fire_rl_traffic(
-      server, prompts, rollouts_per_prompt, min_tokens, max_tokens, input_len);
+      servers, prompts, rollouts_per_prompt, min_tokens, max_tokens, input_len);
   std::cout << render_traffic_json(run.stats);
   return 0;
 }
 
 rlprof::interactive::ProfileConfig profile_interactive_defaults(const Args& args) {
-  rlprof::interactive::ProfileConfig config;
+  auto config = rlprof::interactive::load_profile_defaults();
   for (std::size_t i = 1; i < args.size(); ++i) {
-    if (args[i] == "--prompts") {
+    if (args[i] == "--model") {
+      config.model = require_value(args, i, "--model");
+    } else if (args[i] == "--prompts") {
       config.prompts = std::stoi(require_value(args, i, "--prompts"));
     } else if (args[i] == "--rollouts") {
       config.rollouts = std::stoi(require_value(args, i, "--rollouts"));
@@ -385,8 +443,12 @@ rlprof::interactive::ProfileConfig profile_interactive_defaults(const Args& args
       config.port = std::stoi(require_value(args, i, "--port"));
     } else if (args[i] == "--tp") {
       config.tp = std::stoi(require_value(args, i, "--tp"));
+    } else if (args[i] == "--peer-servers") {
+      config.peer_servers = require_value(args, i, "--peer-servers");
     } else if (args[i] == "--trust-remote-code") {
       config.trust_remote_code = true;
+    } else if (args[i] == "--discard-first-run") {
+      config.discard_first_run = true;
     } else if (args[i] == "--repeat") {
       config.repeat = std::stoi(require_value(args, i, "--repeat"));
     } else if (args[i] == "--output") {
@@ -447,6 +509,8 @@ BenchCommandOptions parse_bench_args(const Args& args) {
       options.n_iter = std::stoll(require_value(args, i, "--n-iter"));
     } else if (args[i] == "--repeats") {
       options.repeats = std::stoll(require_value(args, i, "--repeats"));
+    } else if (args[i] == "--yes") {
+      options.assume_yes = true;
     } else if (args[i] == "--help") {
       options.show_help = true;
     }
@@ -488,7 +552,8 @@ std::string run_bench_command(const BenchCommandOptions& options) {
 int handle_bench(const Args& args) {
   const auto options = parse_bench_args(args);
   if (options.show_help) {
-    std::cout << "Usage: rlprof bench --kernel NAME --shapes SPEC [options]\n";
+    std::cout << "Usage: rlprof bench --kernel NAME --shapes SPEC [options]\n"
+              << "       flags: --yes\n";
     return 0;
   }
   std::cout << run_bench_command(options);
@@ -496,9 +561,11 @@ int handle_bench(const Args& args) {
 }
 
 rlprof::interactive::BenchConfig bench_interactive_defaults(const Args& args) {
-  rlprof::interactive::BenchConfig config;
+  auto config = rlprof::interactive::load_bench_defaults();
   for (std::size_t i = 1; i < args.size(); ++i) {
-    if (args[i] == "--shapes") {
+    if (args[i] == "--kernel") {
+      config.kernel = require_value(args, i, "--kernel");
+    } else if (args[i] == "--shapes") {
       config.shapes = require_value(args, i, "--shapes");
     } else if (args[i] == "--dtype") {
       config.dtype = require_value(args, i, "--dtype");
@@ -538,6 +605,16 @@ int handle_unlock_clocks(const Args& args) {
   }
   rlprof::unlock_gpu_clocks();
   std::cout << "GPU clocks unlocked\n";
+  return 0;
+}
+
+int handle_reset_defaults(const Args& args) {
+  if (args.size() > 1 && args[1] == "--help") {
+    std::cout << "Usage: rlprof reset-defaults\n";
+    return 0;
+  }
+  rlprof::interactive::clear_saved_defaults();
+  std::cout << "Interactive defaults cleared\n";
   return 0;
 }
 
@@ -586,12 +663,84 @@ std::optional<std::string> choose_recent_profile(
   return profiles[static_cast<std::size_t>(*choice)];
 }
 
+int execute_profile_config(
+    const rlprof::interactive::ProfileConfig& config,
+    bool confirm_start,
+    bool persist_defaults) {
+  if (config.model.empty()) {
+    throw std::runtime_error("profile requires a model");
+  }
+
+  const std::string gpu_name = rlprof::interactive::detect_gpu_name();
+  const std::string clock_status = rlprof::interactive::clock_status_label();
+  const bool clocks_locked = rlprof::interactive::are_clocks_locked();
+
+  std::cout << "\n";
+  rlprof::interactive::print_info(
+      "-> " + config.model + " · " + std::to_string(config.prompts) + " prompts x " +
+          std::to_string(config.rollouts) + " rollouts · " +
+          std::to_string(config.min_tokens) + "-" + std::to_string(config.max_tokens) +
+          " tokens",
+      "");
+  rlprof::interactive::print_info(
+      "-> " + gpu_name + " · clocks: " + clock_status,
+      "");
+  if (!trim(config.peer_servers).empty()) {
+    const auto peers = split_csv_list(config.peer_servers);
+    rlprof::interactive::print_info(
+        "-> cluster endpoints: " + std::to_string(peers.size() + 1),
+        "");
+  }
+  if (config.discard_first_run) {
+    rlprof::interactive::print_info("-> discard first run", "enabled");
+  }
+  if (!clocks_locked) {
+    rlprof::interactive::print_warning(
+        "GPU clocks unlocked - run `rlprof lock-clocks` for reproducibility");
+  }
+
+  if (confirm_start) {
+    const auto confirm = rlprof::interactive::prompt_bool("Start profiling", true);
+    if (!confirm.has_value() || !*confirm) {
+      return 0;
+    }
+  }
+
+  std::string output_text;
+  rlprof::interactive::run_with_progress(
+      "Starting vLLM server...",
+      [&](const rlprof::interactive::ProgressCallback& progress) {
+        output_text = run_profile_command(
+            parse_profile_args(rlprof::interactive::build_profile_args(config)),
+            progress);
+      });
+
+  if (persist_defaults) {
+    rlprof::interactive::save_profile_defaults(config);
+  }
+
+  const std::string trimmed_output = trim(output_text);
+  if (config.repeat == 1) {
+    const auto newline = trimmed_output.find('\n');
+    const std::string saved_path =
+        newline == std::string::npos ? trimmed_output : trimmed_output.substr(0, newline);
+    std::cout << "  Saved: " << saved_path << "\n";
+    std::cout << "  Run `rlprof report " << saved_path << "` to view results\n";
+    if (newline != std::string::npos) {
+      std::cout << trim(trimmed_output.substr(newline + 1)) << "\n";
+    }
+  } else {
+    std::cout << trimmed_output << "\n";
+  }
+  return 0;
+}
+
 int interactive_profile_flow(const rlprof::interactive::ProfileConfig& initial) {
   rlprof::interactive::print_header("rlprof · profile your rl environment");
 
   std::optional<std::string> model;
   while (!model.has_value() || model->empty()) {
-    model = rlprof::interactive::prompt_string("Model");
+    model = rlprof::interactive::prompt_string("Model", initial.model);
     if (!model.has_value()) {
       return 0;
     }
@@ -632,9 +781,18 @@ int interactive_profile_flow(const rlprof::interactive::ProfileConfig& initial) 
   if (!tp.has_value()) {
     return 0;
   }
+  auto peer_servers = rlprof::interactive::prompt_string("Peer servers csv", initial.peer_servers);
+  if (!peer_servers.has_value()) {
+    return 0;
+  }
   auto trust_remote_code =
       rlprof::interactive::prompt_bool("Trust remote code", initial.trust_remote_code);
   if (!trust_remote_code.has_value()) {
+    return 0;
+  }
+  auto discard_first_run =
+      rlprof::interactive::prompt_bool("Discard first run", initial.discard_first_run);
+  if (!discard_first_run.has_value()) {
     return 0;
   }
   auto repeat = rlprof::interactive::prompt_int("Repeat runs", initial.repeat);
@@ -643,29 +801,6 @@ int interactive_profile_flow(const rlprof::interactive::ProfileConfig& initial) 
   }
   auto output = rlprof::interactive::prompt_string("Output path", initial.output);
   if (!output.has_value()) {
-    return 0;
-  }
-
-  const std::string gpu_name = rlprof::interactive::detect_gpu_name();
-  const std::string clock_status = rlprof::interactive::clock_status_label();
-  const bool clocks_locked = rlprof::interactive::are_clocks_locked();
-
-  std::cout << "\n";
-  rlprof::interactive::print_info(
-      "-> " + *model + " · " + std::to_string(*prompts) + " prompts x " +
-          std::to_string(*rollouts) + " rollouts · " + std::to_string(*min_tokens) +
-          "-" + std::to_string(*max_tokens) + " tokens",
-      "");
-  rlprof::interactive::print_info(
-      "-> " + gpu_name + " · clocks: " + clock_status,
-      "");
-  if (!clocks_locked) {
-    rlprof::interactive::print_warning(
-        "GPU clocks unlocked - run `rlprof lock-clocks` for reproducibility");
-  }
-
-  const auto confirm = rlprof::interactive::prompt_bool("Start profiling", true);
-  if (!confirm.has_value() || !*confirm) {
     return 0;
   }
 
@@ -678,28 +813,34 @@ int interactive_profile_flow(const rlprof::interactive::ProfileConfig& initial) 
       .input_len = *input_len,
       .port = *port,
       .tp = *tp,
+      .peer_servers = *peer_servers,
       .trust_remote_code = *trust_remote_code,
+      .discard_first_run = *discard_first_run,
       .repeat = *repeat,
       .output = output->empty() ? "auto" : *output,
   };
+  return execute_profile_config(config, true, true);
+}
+
+int execute_bench_config(
+    const rlprof::interactive::BenchConfig& config,
+    bool persist_defaults) {
+  std::cout << "\n  Benchmarking " << config.kernel
+            << " on " << rlprof::interactive::detect_gpu_name() << "...\n";
 
   std::string output_text;
   rlprof::interactive::run_with_progress(
-      "Starting vLLM server...",
-      [&](const rlprof::interactive::ProgressCallback& progress) {
-        output_text = run_profile_command(
-            parse_profile_args(rlprof::interactive::build_profile_args(config)),
-            progress);
+      "Benchmarking...",
+      [&](const rlprof::interactive::ProgressCallback&) {
+        output_text = run_bench_command(
+            parse_bench_args(rlprof::interactive::build_bench_args(config)));
       });
 
-  const std::string trimmed = trim(output_text);
-  if (config.repeat == 1) {
-    std::cout << "  \033[32m";
-    std::cout << "Saved: " << trimmed << "\033[0m\n";
-    std::cout << "  Run `rlprof report " << trimmed << "` to view results\n";
-  } else {
-    std::cout << trimmed << "\n";
+  if (persist_defaults) {
+    rlprof::interactive::save_bench_defaults(config);
   }
+
+  std::cout << output_text;
   return 0;
 }
 
@@ -743,9 +884,6 @@ int interactive_bench_flow(const rlprof::interactive::BenchConfig& initial) {
     return 0;
   }
 
-  std::cout << "\n  Benchmarking " << kernels[static_cast<std::size_t>(*kernel_choice)]
-            << " on " << rlprof::interactive::detect_gpu_name() << "...\n";
-
   const rlprof::interactive::BenchConfig config = {
       .kernel = kernels[static_cast<std::size_t>(*kernel_choice)],
       .shapes = *shapes,
@@ -754,16 +892,7 @@ int interactive_bench_flow(const rlprof::interactive::BenchConfig& initial) {
       .n_iter = *n_iter,
       .repeats = *repeats,
   };
-
-  std::string output_text;
-  rlprof::interactive::run_with_progress(
-      "Benchmarking...",
-      [&](const rlprof::interactive::ProgressCallback&) {
-        output_text = run_bench_command(
-            parse_bench_args(rlprof::interactive::build_bench_args(config)));
-      });
-  std::cout << output_text;
-  return 0;
+  return execute_bench_config(config, true);
 }
 
 int interactive_report_flow() {
@@ -816,17 +945,166 @@ int interactive_export_flow(const std::string& default_format = "csv") {
       {"export", *path, "--format", formats[static_cast<std::size_t>(*format_choice)]});
 }
 
+std::string completion_script(const std::string& shell) {
+  if (shell == "bash") {
+    return R"(# bash completion for rlprof
+_rlprof_complete() {
+  local cur prev
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local commands="profile report bench diff export traffic lock-clocks unlock-clocks reset-defaults completion help"
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+    return
+  fi
+  case "${COMP_WORDS[1]}" in
+    profile)
+      COMPREPLY=( $(compgen -W "--model --prompts --rollouts --min-tokens --max-tokens --input-len --port --tp --peer-servers --trust-remote-code --discard-first-run --repeat --output --yes --help" -- "$cur") )
+      ;;
+    bench)
+      COMPREPLY=( $(compgen -W "--kernel --shapes --dtype --warmup --n-iter --repeats --yes --help" -- "$cur") )
+      ;;
+    report)
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      ;;
+    diff)
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      ;;
+    export)
+      COMPREPLY=( $(compgen -W "--format csv json" -- "$cur") $(compgen -f -- "$cur") )
+      ;;
+    traffic)
+      COMPREPLY=( $(compgen -W "--server --servers --prompts --rollouts-per-prompt --min-tokens --max-tokens --input-len" -- "$cur") )
+      ;;
+    lock-clocks)
+      COMPREPLY=( $(compgen -W "--freq --help" -- "$cur") )
+      ;;
+    unlock-clocks|reset-defaults|completion|help)
+      COMPREPLY=()
+      ;;
+  esac
+}
+complete -F _rlprof_complete rlprof
+)";
+  }
+  if (shell == "zsh") {
+    return R"(#compdef rlprof
+_rlprof() {
+  local -a commands
+  commands=(
+    'profile:run GPU profiling under RL traffic'
+    'report:view a saved profile'
+    'bench:benchmark kernel implementations'
+    'diff:compare two profiles'
+    'export:export profile data'
+    'traffic:run traffic generator'
+    'lock-clocks:lock GPU clocks'
+    'unlock-clocks:unlock GPU clocks'
+    'reset-defaults:clear saved interactive defaults'
+    'completion:print shell completion'
+    'help:show help'
+  )
+  _arguments \
+    '1:command:->command' \
+    '*::arg:->args'
+  case $state in
+    command)
+      _describe 'command' commands
+      ;;
+    args)
+      case $words[2] in
+        profile)
+          _arguments '--model[model name]' '--prompts[prompt count]' '--rollouts[rollouts per prompt]' '--min-tokens[min output tokens]' '--max-tokens[max output tokens]' '--input-len[input length]' '--port[server port]' '--tp[tensor parallel size]' '--peer-servers[peer endpoints]' '--trust-remote-code[trust remote code]' '--discard-first-run[run and discard a warmup pass]' '--repeat[repeat count]' '--output[output path]' '--yes[accept saved defaults]' '--help[show help]'
+          ;;
+        bench)
+          _arguments '--kernel[kernel name]' '--shapes[shape list]' '--dtype[data type]' '--warmup[warmup iterations]' '--n-iter[timed iterations]' '--repeats[repeat count]' '--yes[accept saved defaults]' '--help[show help]'
+          ;;
+        export)
+          _arguments '--format[export format]:format:(csv json)' '*:path:_files'
+          ;;
+        report|diff)
+          _files
+          ;;
+      esac
+      ;;
+  esac
+}
+_rlprof "$@"
+)";
+  }
+  if (shell == "fish") {
+    return R"(complete -c rlprof -f
+complete -c rlprof -n '__fish_use_subcommand' -a 'profile' -d 'run GPU profiling under RL traffic'
+complete -c rlprof -n '__fish_use_subcommand' -a 'report' -d 'view a saved profile'
+complete -c rlprof -n '__fish_use_subcommand' -a 'bench' -d 'benchmark kernel implementations'
+complete -c rlprof -n '__fish_use_subcommand' -a 'diff' -d 'compare two profiles'
+complete -c rlprof -n '__fish_use_subcommand' -a 'export' -d 'export profile data'
+complete -c rlprof -n '__fish_use_subcommand' -a 'traffic' -d 'run traffic generator'
+complete -c rlprof -n '__fish_use_subcommand' -a 'lock-clocks' -d 'lock GPU clocks'
+complete -c rlprof -n '__fish_use_subcommand' -a 'unlock-clocks' -d 'unlock GPU clocks'
+complete -c rlprof -n '__fish_use_subcommand' -a 'reset-defaults' -d 'clear saved interactive defaults'
+complete -c rlprof -n '__fish_use_subcommand' -a 'completion' -d 'print shell completion'
+complete -c rlprof -n '__fish_use_subcommand' -a 'help' -d 'show help'
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l model
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l prompts
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l rollouts
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l min-tokens
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l max-tokens
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l input-len
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l port
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l tp
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l peer-servers
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l trust-remote-code
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l discard-first-run
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l repeat
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l output
+complete -c rlprof -n '__fish_seen_subcommand_from profile' -l yes
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l kernel -a 'silu_and_mul fused_add_rms_norm rotary_embedding'
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l shapes
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l dtype -a 'bf16 fp16'
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l warmup
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l n-iter
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l repeats
+complete -c rlprof -n '__fish_seen_subcommand_from bench' -l yes
+complete -c rlprof -n '__fish_seen_subcommand_from export' -l format -a 'csv json'
+)";
+  }
+  throw std::runtime_error("unsupported shell: " + shell);
+}
+
+int handle_completion(const Args& args) {
+  std::string shell = "bash";
+  if (args.size() >= 2 && args[1] != "--help") {
+    shell = args[1];
+  }
+  if (args.size() >= 2 && args[1] == "--help") {
+    std::cout << "Usage: rlprof completion [bash|zsh|fish]\n"
+              << "Examples:\n"
+              << "  rlprof completion bash > ~/.local/share/bash-completion/completions/rlprof\n"
+              << "  rlprof completion zsh > ~/.zfunc/_rlprof\n"
+              << "  rlprof completion fish > ~/.config/fish/completions/rlprof.fish\n";
+    return 0;
+  }
+  std::cout << completion_script(shell);
+  return 0;
+}
+
 void print_help() {
   std::cout << "Usage: rlprof <command> [options]\n\n"
             << "Commands:\n"
             << "  profile --model MODEL [options] [--repeat N]\n"
+            << "    optional: --peer-servers URL1,URL2,... --discard-first-run --yes\n"
             << "  lock-clocks [--freq MHZ]\n"
             << "  unlock-clocks\n"
+            << "  reset-defaults\n"
             << "  report [path]\n"
             << "  export [path] --format csv|json\n"
             << "  diff <a.db> <b.db>\n"
             << "  bench --kernel NAME --shapes SPEC [options]\n"
-            << "  traffic --server URL [options]\n";
+            << "    optional: --yes\n"
+            << "  traffic --server URL | --servers URL1,URL2,... [options]\n"
+            << "  completion [bash|zsh|fish]\n";
 }
 
 }  // namespace
@@ -845,19 +1123,20 @@ int main(int argc, char** argv) {
               "Export - export profile data",
               "Lock clocks - lock GPU clocks for reproducibility",
               "Unlock clocks",
+              "Reset defaults",
           },
           0);
       if (!choice.has_value()) {
         return 0;
       }
       if (*choice == 0) {
-        return interactive_profile_flow({});
+        return interactive_profile_flow(rlprof::interactive::load_profile_defaults());
       }
       if (*choice == 1) {
         return interactive_report_flow();
       }
       if (*choice == 2) {
-        return interactive_bench_flow({});
+        return interactive_bench_flow(rlprof::interactive::load_bench_defaults());
       }
       if (*choice == 3) {
         return interactive_diff_flow();
@@ -871,6 +1150,9 @@ int main(int argc, char** argv) {
       if (*choice == 6) {
         return handle_unlock_clocks({"unlock-clocks"});
       }
+      if (*choice == 7) {
+        return handle_reset_defaults({"reset-defaults"});
+      }
       return 0;
     }
 
@@ -878,7 +1160,15 @@ int main(int argc, char** argv) {
     const std::string command = args[0];
 
     if (command == "profile" && !has_flag(args, "--model") && !has_flag(args, "--help")) {
-      return interactive_profile_flow(profile_interactive_defaults(args));
+      const auto config = profile_interactive_defaults(args);
+      if (has_flag(args, "--yes")) {
+        if (config.model.empty()) {
+          throw std::runtime_error(
+              "--yes requires a saved profile default model or explicit --model");
+        }
+        return execute_profile_config(config, false, true);
+      }
+      return interactive_profile_flow(config);
     }
 
     if (command == "profile") {
@@ -899,6 +1189,10 @@ int main(int argc, char** argv) {
 
     if (command == "unlock-clocks") {
       return handle_unlock_clocks(args);
+    }
+
+    if (command == "reset-defaults") {
+      return handle_reset_defaults(args);
     }
 
     if (command == "export" && !has_positional_arg(args) && !has_flag(args, "--help")) {
@@ -928,7 +1222,11 @@ int main(int argc, char** argv) {
     }
 
     if (command == "bench" && !has_flag(args, "--kernel") && !has_flag(args, "--help")) {
-      return interactive_bench_flow(bench_interactive_defaults(args));
+      const auto config = bench_interactive_defaults(args);
+      if (has_flag(args, "--yes")) {
+        return execute_bench_config(config, true);
+      }
+      return interactive_bench_flow(config);
     }
 
     if (command == "bench") {
@@ -938,6 +1236,10 @@ int main(int argc, char** argv) {
     if (command == "--help" || command == "help") {
       print_help();
       return 0;
+    }
+
+    if (command == "completion") {
+      return handle_completion(args);
     }
 
     throw std::runtime_error("unknown command: " + command);

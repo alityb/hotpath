@@ -1,6 +1,7 @@
 #include "interactive.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -9,9 +10,11 @@
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -48,6 +51,85 @@ std::string trim(std::string value) {
   return value.substr(start);
 }
 
+bool use_color() {
+  const char* no_color = std::getenv("NO_COLOR");
+  if (no_color != nullptr) {
+    return false;
+  }
+  const char* term = std::getenv("TERM");
+  if (term != nullptr && std::string(term) == "dumb") {
+    return false;
+  }
+  return isatty(STDOUT_FILENO);
+}
+
+bool use_ansi_control() {
+  return isatty(STDOUT_FILENO);
+}
+
+const char* color_code(const char* code) {
+  return use_color() ? code : "";
+}
+
+std::filesystem::path defaults_path() {
+  const char* explicit_path = std::getenv("RLPROF_DEFAULTS_PATH");
+  if (explicit_path != nullptr && std::string(explicit_path).size() > 0) {
+    return std::filesystem::path(explicit_path);
+  }
+  const char* xdg_state_home = std::getenv("XDG_STATE_HOME");
+  if (xdg_state_home != nullptr && std::string(xdg_state_home).size() > 0) {
+    return std::filesystem::path(xdg_state_home) / "rlprof" / "interactive_defaults.cfg";
+  }
+  const char* home = std::getenv("HOME");
+  if (home != nullptr && std::string(home).size() > 0) {
+    return std::filesystem::path(home) / ".local" / "state" / "rlprof" /
+           "interactive_defaults.cfg";
+  }
+  return std::filesystem::path(".rlprof") / "interactive_defaults.cfg";
+}
+
+std::map<std::string, std::string> load_defaults_map() {
+  std::map<std::string, std::string> values;
+  std::ifstream in(defaults_path());
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::size_t split = line.find('=');
+    if (split == std::string::npos) {
+      continue;
+    }
+    values[trim(line.substr(0, split))] = trim(line.substr(split + 1));
+  }
+  return values;
+}
+
+void save_defaults_map(const std::map<std::string, std::string>& values) {
+  std::filesystem::create_directories(defaults_path().parent_path());
+  std::ofstream out(defaults_path());
+  for (const auto& [key, value] : values) {
+    out << key << "=" << value << "\n";
+  }
+}
+
+bool parse_bool_value(const std::map<std::string, std::string>& values, const std::string& key, bool fallback) {
+  const auto it = values.find(key);
+  if (it == values.end()) {
+    return fallback;
+  }
+  return it->second == "true" || it->second == "1" || it->second == "yes";
+}
+
+int parse_int_value(const std::map<std::string, std::string>& values, const std::string& key, int fallback) {
+  const auto it = values.find(key);
+  if (it == values.end() || it->second.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stoi(it->second);
+  } catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 std::string run_command_capture(const std::string& command) {
   std::array<char, 4096> buffer{};
   std::string output;
@@ -77,11 +159,13 @@ std::optional<std::string> read_line() {
 }
 
 void print_prompt_prefix(const std::string& label, const std::string& default_value) {
-  std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET;
+  std::cout << "  " << color_code(CYAN) << "? " << color_code(RESET)
+            << color_code(BOLD) << label << color_code(RESET);
   if (!default_value.empty()) {
-    std::cout << " " << DIM << "(" << default_value << ")" << RESET;
+    std::cout << " " << color_code(DIM) << "(" << default_value << ")"
+              << color_code(RESET);
   }
-  std::cout << ": " << GREEN << "> " << RESET;
+  std::cout << ": " << color_code(GREEN) << "> " << color_code(RESET);
   std::flush(std::cout);
 }
 
@@ -172,7 +256,8 @@ std::optional<int> prompt_choice(
 
   // Fall back to numbered input when stdin is not a terminal.
   if (!isatty(STDIN_FILENO)) {
-    std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET << "\n";
+    std::cout << "  " << color_code(CYAN) << "? " << color_code(RESET)
+              << color_code(BOLD) << label << color_code(RESET) << "\n";
     for (std::size_t i = 0; i < options.size(); ++i) {
       std::cout << "    [" << (i + 1) << "] " << options[i] << "\n";
     }
@@ -207,21 +292,26 @@ std::optional<int> prompt_choice(
   int selected = std::clamp(default_index, 0, n - 1);
 
   const auto render = [&]() {
-    std::cout << "  " << CYAN << "? " << RESET << BOLD << label << RESET
-              << "  " << DIM << "(↑↓ · enter · q)" << RESET << "\n";
+    std::cout << "  " << color_code(CYAN) << "? " << color_code(RESET)
+              << color_code(BOLD) << label << color_code(RESET)
+              << "  " << color_code(DIM) << "(↑↓ · enter · q)"
+              << color_code(RESET) << "\n";
     for (int i = 0; i < n; ++i) {
       if (i == selected) {
-        std::cout << "  " << CYAN << "> " << RESET
+        std::cout << "  " << color_code(CYAN) << "> " << color_code(RESET)
                   << options[static_cast<std::size_t>(i)] << "\n";
       } else {
-        std::cout << "    " << DIM << options[static_cast<std::size_t>(i)] << RESET << "\n";
+        std::cout << "    " << color_code(DIM)
+                  << options[static_cast<std::size_t>(i)] << color_code(RESET) << "\n";
       }
     }
     std::flush(std::cout);
   };
 
-  std::cout << "\033[?25l"; // hide cursor
-  std::cout << "\033[s";    // save cursor position
+  if (use_ansi_control()) {
+    std::cout << "\033[?25l";
+    std::cout << "\033[s";
+  }
   render();
 
   std::optional<int> result;
@@ -248,35 +338,44 @@ std::optional<int> prompt_choice(
         }
       }
       // Restore saved cursor position, clear to end of screen, re-render.
-      std::cout << "\033[u\033[J";
+      if (use_ansi_control()) {
+        std::cout << "\033[u\033[J";
+      }
       render();
     }
   }
 
-  std::cout << "\033[?25h"; // show cursor
+  if (use_ansi_control()) {
+    std::cout << "\033[?25h";
+  }
   tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
 
-  // Restore to where the menu started, clear it, then show compact result.
-  std::cout << "\033[u\033[J";
+  if (use_ansi_control()) {
+    std::cout << "\033[u\033[J";
+  }
   if (result.has_value()) {
-    std::cout << "  " << CYAN << "✓ " << RESET << BOLD << label << RESET
-              << "  " << DIM << options[static_cast<std::size_t>(*result)] << RESET << "\n";
+    std::cout << "  " << color_code(CYAN) << "✓ " << color_code(RESET)
+              << color_code(BOLD) << label << color_code(RESET)
+              << "  " << color_code(DIM)
+              << options[static_cast<std::size_t>(*result)] << color_code(RESET) << "\n";
   }
   return result;
 }
 
 void print_header(const std::string& text) {
-  std::cout << "\n  " << BOLD << CYAN << text << RESET << "\n\n";
+  std::cout << "\n  " << color_code(BOLD) << color_code(CYAN)
+            << text << color_code(RESET) << "\n\n";
 }
 
 void print_warning(const std::string& text) {
-  std::cout << "  " << YELLOW << "!" << RESET << " " << text << "\n";
+  std::cout << "  " << color_code(YELLOW) << "!" << color_code(RESET)
+            << " " << text << "\n";
 }
 
 void print_info(const std::string& label, const std::string& value) {
-  std::cout << "  " << WHITE << label << RESET;
+  std::cout << "  " << color_code(WHITE) << label << color_code(RESET);
   if (!value.empty()) {
-    std::cout << " " << DIM << value << RESET;
+    std::cout << " " << color_code(DIM) << value << color_code(RESET);
   }
   std::cout << "\n";
 }
@@ -321,6 +420,93 @@ std::vector<std::string> list_recent_profiles(int max_count) {
   return paths;
 }
 
+ProfileConfig load_profile_defaults() {
+  const auto values = load_defaults_map();
+  ProfileConfig config;
+  const auto get = [&](const std::string& key, const std::string& fallback = "") {
+    const auto it = values.find(key);
+    return it == values.end() ? fallback : it->second;
+  };
+  config.model = get("profile.model");
+  config.prompts = parse_int_value(values, "profile.prompts", config.prompts);
+  config.rollouts = parse_int_value(values, "profile.rollouts", config.rollouts);
+  config.min_tokens = parse_int_value(values, "profile.min_tokens", config.min_tokens);
+  config.max_tokens = parse_int_value(values, "profile.max_tokens", config.max_tokens);
+  config.input_len = parse_int_value(values, "profile.input_len", config.input_len);
+  config.port = parse_int_value(values, "profile.port", config.port);
+  config.tp = parse_int_value(values, "profile.tp", config.tp);
+  config.peer_servers = get("profile.peer_servers");
+  config.trust_remote_code =
+      parse_bool_value(values, "profile.trust_remote_code", config.trust_remote_code);
+  config.discard_first_run =
+      parse_bool_value(values, "profile.discard_first_run", config.discard_first_run);
+  config.repeat = parse_int_value(values, "profile.repeat", config.repeat);
+  const std::string output = get("profile.output");
+  if (!output.empty()) {
+    config.output = output;
+  }
+  return config;
+}
+
+BenchConfig load_bench_defaults() {
+  const auto values = load_defaults_map();
+  BenchConfig config;
+  const auto get = [&](const std::string& key, const std::string& fallback = "") {
+    const auto it = values.find(key);
+    return it == values.end() ? fallback : it->second;
+  };
+  const std::string kernel = get("bench.kernel");
+  if (!kernel.empty()) {
+    config.kernel = kernel;
+  }
+  const std::string shapes = get("bench.shapes");
+  if (!shapes.empty()) {
+    config.shapes = shapes;
+  }
+  const std::string dtype = get("bench.dtype");
+  if (!dtype.empty()) {
+    config.dtype = dtype;
+  }
+  config.warmup = parse_int_value(values, "bench.warmup", config.warmup);
+  config.n_iter = parse_int_value(values, "bench.n_iter", config.n_iter);
+  config.repeats = parse_int_value(values, "bench.repeats", config.repeats);
+  return config;
+}
+
+void save_profile_defaults(const ProfileConfig& config) {
+  auto values = load_defaults_map();
+  values["profile.model"] = config.model;
+  values["profile.prompts"] = std::to_string(config.prompts);
+  values["profile.rollouts"] = std::to_string(config.rollouts);
+  values["profile.min_tokens"] = std::to_string(config.min_tokens);
+  values["profile.max_tokens"] = std::to_string(config.max_tokens);
+  values["profile.input_len"] = std::to_string(config.input_len);
+  values["profile.port"] = std::to_string(config.port);
+  values["profile.tp"] = std::to_string(config.tp);
+  values["profile.peer_servers"] = config.peer_servers;
+  values["profile.trust_remote_code"] = config.trust_remote_code ? "true" : "false";
+  values["profile.discard_first_run"] = config.discard_first_run ? "true" : "false";
+  values["profile.repeat"] = std::to_string(config.repeat);
+  values["profile.output"] = config.output;
+  save_defaults_map(values);
+}
+
+void save_bench_defaults(const BenchConfig& config) {
+  auto values = load_defaults_map();
+  values["bench.kernel"] = config.kernel;
+  values["bench.shapes"] = config.shapes;
+  values["bench.dtype"] = config.dtype;
+  values["bench.warmup"] = std::to_string(config.warmup);
+  values["bench.n_iter"] = std::to_string(config.n_iter);
+  values["bench.repeats"] = std::to_string(config.repeats);
+  save_defaults_map(values);
+}
+
+void clear_saved_defaults() {
+  std::error_code ec;
+  std::filesystem::remove(defaults_path(), ec);
+}
+
 std::vector<std::string> build_profile_args(const ProfileConfig& config) {
   std::vector<std::string> args = {
       "profile",
@@ -343,8 +529,16 @@ std::vector<std::string> build_profile_args(const ProfileConfig& config) {
       "--repeat",
       std::to_string(config.repeat),
   };
+  if (config.discard_first_run) {
+    args.push_back("--discard-first-run");
+  }
   if (config.trust_remote_code) {
     args.push_back("--trust-remote-code");
+  }
+  const std::string peer_servers = trim(config.peer_servers);
+  if (!peer_servers.empty()) {
+    args.push_back("--peer-servers");
+    args.push_back(peer_servers);
   }
   const std::string output = trim(config.output);
   if (!output.empty() && output != "auto") {
@@ -402,7 +596,8 @@ void run_with_progress(
       std::lock_guard<std::mutex> lock(status_mutex);
       current_status = status;
     }
-    std::cout << "\r  " << CYAN << spinner[static_cast<std::size_t>(frame)] << RESET
+    std::cout << "\r  " << color_code(CYAN)
+              << spinner[static_cast<std::size_t>(frame)] << color_code(RESET)
               << " " << current_status << "    " << std::flush;
     frame = (frame + 1) % static_cast<int>(spinner.size());
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
@@ -412,7 +607,11 @@ void run_with_progress(
     worker.join();
   }
 
-  std::cout << "\r\033[2K" << std::flush;
+  if (isatty(STDOUT_FILENO)) {
+    std::cout << "\r\033[2K" << std::flush;
+  } else {
+    std::cout << "\n";
+  }
   if (error) {
     std::rethrow_exception(error);
   }

@@ -21,7 +21,9 @@ struct ProfileConfig {
   std::int64_t input_len = 512;
   std::int64_t port = 8000;
   std::int64_t tp = 1;
+  std::vector<std::string> peer_servers;
   bool trust_remote_code = false;
+  bool discard_first_run = false;
   std::filesystem::path output;
   std::int64_t startup_timeout_s = 300;
   std::int64_t metrics_interval_ms = 1000;

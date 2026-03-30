@@ -33,10 +33,12 @@ ignored_metric 123
   expect_true(parsed.at("vllm:num_requests_running") == 84.0, "bad running parse");
 
   const std::vector<rlprof::MetricSample> samples = {
-      {.sample_time = 0.0, .metric = "vllm:num_preemptions_total", .value = 3.0},
-      {.sample_time = 1.0, .metric = "vllm:num_preemptions_total", .value = 5.0},
-      {.sample_time = 0.0, .metric = "vllm:gpu_cache_usage_perc", .value = 0.5},
-      {.sample_time = 1.0, .metric = "vllm:gpu_cache_usage_perc", .value = 0.75},
+      {.sample_time = 0.0, .source = "cluster", .metric = "vllm:num_preemptions_total", .value = 3.0},
+      {.sample_time = 1.0, .source = "cluster", .metric = "vllm:num_preemptions_total", .value = 5.0},
+      {.sample_time = 0.0, .source = "cluster", .metric = "vllm:gpu_cache_usage_perc", .value = 0.5},
+      {.sample_time = 1.0, .source = "cluster", .metric = "vllm:gpu_cache_usage_perc", .value = 0.75},
+      {.sample_time = 0.0, .source = "peer1", .metric = "vllm:num_preemptions_total", .value = 30.0},
+      {.sample_time = 1.0, .source = "peer1", .metric = "vllm:num_preemptions_total", .value = 50.0},
   };
 
   const auto summaries = rlprof::profiler::summarize_samples(samples);

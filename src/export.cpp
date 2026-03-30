@@ -138,6 +138,7 @@ std::vector<std::filesystem::path> export_profile(
     for (std::size_t i = 0; i < profile.metrics.size(); ++i) {
       const auto& metric = profile.metrics[i];
       out << "    {\"sample_time\": " << metric.sample_time
+          << ", \"source\": \"" << json_escape(metric.source)
           << ", \"metric\": \"" << json_escape(metric.metric)
           << "\", \"value\": " << metric.value << "}";
       out << (i + 1 == profile.metrics.size() ? "\n" : ",\n");
@@ -199,10 +200,11 @@ std::vector<std::filesystem::path> export_profile(
 
     const std::filesystem::path metrics_path =
         path.parent_path() / (path.stem().string() + "_vllm_metrics.csv");
-    std::vector<std::string> metrics_lines = {"sample_time,metric,value"};
+    std::vector<std::string> metrics_lines = {"sample_time,source,metric,value"};
     for (const auto& metric : profile.metrics) {
       std::ostringstream line;
-      line << metric.sample_time << "," << csv_escape(metric.metric) << "," << metric.value;
+      line << metric.sample_time << "," << csv_escape(metric.source) << ","
+           << csv_escape(metric.metric) << "," << metric.value;
       metrics_lines.push_back(line.str());
     }
     write_csv(metrics_path, metrics_lines);

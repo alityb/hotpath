@@ -166,6 +166,8 @@ std::string render_report(
          << " rollouts/prompt, " << meta.max_tokens << " max tokens\n\n";
   output << "category buckets use conservative substring matching; raw kernel names are authoritative\n\n";
 
+  const bool cluster_mode = metadata_value(metadata, "cluster_mode", "false") == "true";
+
   const auto warnings = warning_messages(metadata);
   if (!warnings.empty()) {
     output << "MEASUREMENT WARNINGS\n";
@@ -198,6 +200,11 @@ std::string render_report(
     append_row(output, context_columns, {"driver version", metadata_value(metadata, "measurement_driver_version")});
     append_row(output, context_columns, {"persistence mode", metadata_value(metadata, "measurement_persistence_mode")});
     append_row(output, context_columns, {"gpu clock policy", metadata_value(metadata, "measurement_gpu_clock_policy")});
+    if (cluster_mode) {
+      append_row(output, context_columns, {"cluster endpoints", metadata_value(metadata, "cluster_endpoint_count")});
+      append_row(output, context_columns, {"peer endpoints", metadata_value(metadata, "cluster_peer_endpoint_count")});
+      append_row(output, context_columns, {"trace scope", metadata_value(metadata, "cluster_trace_scope")});
+    }
     if (metadata_value(metadata, "measurement_gpu_max_sm_clock_mhz", "").size() > 0) {
       append_row(
           output,
@@ -373,7 +380,7 @@ std::string render_report(
     output << '\n';
   }
 
-  output << "VLLM SERVER METRICS\n";
+  output << (cluster_mode ? "CLUSTER VLLM METRICS\n" : "VLLM SERVER METRICS\n");
   const std::vector<std::pair<std::string, std::size_t>> metric_columns = {
       {"metric", 30},
       {"avg", 10},

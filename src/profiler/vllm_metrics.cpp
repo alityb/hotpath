@@ -54,6 +54,13 @@ double now_seconds() {
   return std::chrono::duration<double>(now).count();
 }
 
+bool aggregate_by_average(const std::string& metric) {
+  return metric == "vllm:gpu_cache_usage_perc" ||
+         metric == "vllm:prefix_cache_hit_rate" ||
+         metric.find("_seconds_p50") != std::string::npos ||
+         metric.find("_seconds_p99") != std::string::npos;
+}
+
 }  // namespace
 
 std::unordered_map<std::string, double> parse_metrics_text(const std::string& text) {
@@ -87,7 +94,17 @@ std::unordered_map<std::string, double> parse_metrics_text(const std::string& te
 
 std::vector<MetricSummary> summarize_samples(const std::vector<MetricSample>& samples) {
   std::unordered_map<std::string, std::vector<double>> grouped;
+  bool saw_cluster_samples = false;
   for (const MetricSample& sample : samples) {
+    if (sample.source == "cluster") {
+      saw_cluster_samples = true;
+      break;
+    }
+  }
+  for (const MetricSample& sample : samples) {
+    if (saw_cluster_samples && sample.source != "cluster") {
+      continue;
+    }
     grouped[sample.metric].push_back(sample.value);
   }
 
@@ -116,18 +133,59 @@ std::vector<MetricSummary> summarize_samples(const std::vector<MetricSample>& sa
 }
 
 std::vector<MetricSample> fetch_metrics_once(const std::string& server_url) {
-  const std::string command = "curl -fsS " + server_url + "/metrics";
-  const std::string body = run_command(command);
-  const double sample_time = now_seconds();
+  return fetch_metrics_once(
+      std::vector<MetricEndpoint>{{.source = "cluster", .server_url = server_url}});
+}
 
+std::vector<MetricSample> fetch_metrics_once(
+    const std::vector<MetricEndpoint>& endpoints) {
+  if (endpoints.empty()) {
+    return {};
+  }
+
+  const double sample_time = now_seconds();
   std::vector<MetricSample> samples;
-  for (const auto& [metric, value] : parse_metrics_text(body)) {
+  std::unordered_map<std::string, std::vector<double>> aggregate_values;
+
+  for (const auto& endpoint : endpoints) {
+    try {
+      const std::string command = "curl -fsS " + endpoint.server_url + "/metrics";
+      const std::string body = run_command(command);
+      for (const auto& [metric, value] : parse_metrics_text(body)) {
+        if (endpoints.size() > 1) {
+          samples.push_back(MetricSample{
+              .sample_time = sample_time,
+              .source = endpoint.source,
+              .metric = metric,
+              .value = value,
+          });
+        }
+        aggregate_values[metric].push_back(value);
+      }
+    } catch (const std::exception&) {
+    }
+  }
+
+  for (auto& [metric, values] : aggregate_values) {
+    double aggregate = 0.0;
+    if (aggregate_by_average(metric)) {
+      for (double value : values) {
+        aggregate += value;
+      }
+      aggregate /= static_cast<double>(values.size());
+    } else {
+      for (double value : values) {
+        aggregate += value;
+      }
+    }
     samples.push_back(MetricSample{
         .sample_time = sample_time,
+        .source = "cluster",
         .metric = metric,
-        .value = value,
+        .value = aggregate,
     });
   }
+
   return samples;
 }
 
@@ -135,11 +193,21 @@ std::vector<MetricSample> poll_metrics(
     const std::string& server_url,
     std::chrono::milliseconds interval,
     const std::atomic<bool>& stop_flag) {
+  return poll_metrics(
+      std::vector<MetricEndpoint>{{.source = "cluster", .server_url = server_url}},
+      interval,
+      stop_flag);
+}
+
+std::vector<MetricSample> poll_metrics(
+    const std::vector<MetricEndpoint>& endpoints,
+    std::chrono::milliseconds interval,
+    const std::atomic<bool>& stop_flag) {
   std::vector<MetricSample> samples;
 
   while (!stop_flag.load()) {
     try {
-      const std::vector<MetricSample> batch = fetch_metrics_once(server_url);
+      const std::vector<MetricSample> batch = fetch_metrics_once(endpoints);
       samples.insert(samples.end(), batch.begin(), batch.end());
     } catch (const std::exception&) {
     }

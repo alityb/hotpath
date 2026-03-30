@@ -220,6 +220,28 @@ TrafficRun fire_rl_traffic(
     std::int64_t max_tokens,
     std::int64_t input_len,
     std::uint32_t seed) {
+  return fire_rl_traffic(
+      std::vector<std::string>{server_url},
+      num_prompts,
+      rollouts_per_prompt,
+      min_tokens,
+      max_tokens,
+      input_len,
+      seed);
+}
+
+TrafficRun fire_rl_traffic(
+    const std::vector<std::string>& server_urls,
+    std::int64_t num_prompts,
+    std::int64_t rollouts_per_prompt,
+    std::int64_t min_tokens,
+    std::int64_t max_tokens,
+    std::int64_t input_len,
+    std::uint32_t seed) {
+  if (server_urls.empty()) {
+    throw std::runtime_error("at least one server url is required");
+  }
+
   const std::vector<TrafficRequest> requests = generate_requests(
       num_prompts,
       rollouts_per_prompt,
@@ -230,8 +252,11 @@ TrafficRun fire_rl_traffic(
 
   std::vector<std::future<TrafficResult>> futures;
   futures.reserve(requests.size());
-  for (const TrafficRequest& request : requests) {
-    futures.push_back(std::async(std::launch::async, send_request, server_url, request));
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const std::string& server_url =
+        server_urls[i % server_urls.size()];
+    futures.push_back(
+        std::async(std::launch::async, send_request, server_url, requests[i]));
   }
 
   std::vector<TrafficResult> results;

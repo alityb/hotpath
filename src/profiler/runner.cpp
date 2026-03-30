@@ -179,6 +179,19 @@ std::vector<std::string> split_csv_line(const std::string& line) {
   return fields;
 }
 
+std::vector<std::string> split_csv_list(const std::string& line) {
+  std::vector<std::string> fields;
+  std::stringstream stream(line);
+  std::string part;
+  while (std::getline(stream, part, ',')) {
+    part = trim(part);
+    if (!part.empty()) {
+      fields.push_back(part);
+    }
+  }
+  return fields;
+}
+
 double now_seconds() {
   using Clock = std::chrono::system_clock;
   const auto now = Clock::now().time_since_epoch();
@@ -426,6 +439,32 @@ void notify_progress(const ProgressCallback& progress, const std::string& status
   }
 }
 
+std::vector<std::string> cluster_server_urls(
+    const ProfileConfig& config,
+    const std::string& local_server_url) {
+  std::vector<std::string> servers;
+  servers.push_back(local_server_url);
+  for (const auto& peer : config.peer_servers) {
+    if (!peer.empty()) {
+      servers.push_back(peer);
+    }
+  }
+  return servers;
+}
+
+std::vector<MetricEndpoint> metric_endpoints(
+    const std::vector<std::string>& server_urls) {
+  std::vector<MetricEndpoint> endpoints;
+  endpoints.reserve(server_urls.size());
+  for (std::size_t i = 0; i < server_urls.size(); ++i) {
+    endpoints.push_back(MetricEndpoint{
+        .source = i == 0 ? "local" : "peer" + std::to_string(i),
+        .server_url = server_urls[i],
+    });
+  }
+  return endpoints;
+}
+
 }  // namespace
 
 ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progress) {
@@ -437,6 +476,10 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
   }
 
   const std::string server_url = "http://127.0.0.1:" + std::to_string(config.port);
+  const std::vector<std::string> traffic_servers =
+      cluster_server_urls(config, server_url);
+  const std::vector<MetricEndpoint> metrics_endpoints =
+      metric_endpoints(traffic_servers);
   const std::string gpu_name = trim(run_command("nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1"));
   const rlprof::ClockPolicyInfo clock_policy = rlprof::query_clock_policy();
   const std::string vllm_path = vllm_binary();
@@ -490,7 +533,7 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
 
     metrics_thread = std::thread([&]() {
       metrics = poll_metrics(
-          server_url,
+          metrics_endpoints,
           std::chrono::milliseconds(config.metrics_interval_ms),
           stop_flag);
     });
@@ -505,9 +548,20 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
         "Firing RL traffic (" +
             std::to_string(config.prompts * config.rollouts) + " requests)...");
     const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe");
-    const std::string traffic_command =
-        self.string() +
-        " traffic --server " + server_url +
+    std::string traffic_command =
+        self.string() + " traffic " +
+        (traffic_servers.size() == 1
+             ? "--server " + server_url
+             : "--servers " + [&]() {
+                 std::ostringstream joined;
+                 for (std::size_t i = 0; i < traffic_servers.size(); ++i) {
+                   if (i > 0) {
+                     joined << ",";
+                   }
+                   joined << traffic_servers[i];
+                 }
+                 return joined.str();
+               }()) +
         " --prompts " + std::to_string(config.prompts) +
         " --rollouts-per-prompt " + std::to_string(config.rollouts) +
         " --max-tokens " + std::to_string(config.max_tokens) +
@@ -579,8 +633,24 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
         {"max_tokens", std::to_string(config.max_tokens)},
         {"min_tokens", std::to_string(config.min_tokens)},
         {"input_len", std::to_string(config.input_len)},
+        {"cluster_mode", traffic_servers.size() > 1 ? "true" : "false"},
+        {"cluster_endpoint_count", std::to_string(traffic_servers.size())},
+        {"cluster_peer_endpoint_count", std::to_string(config.peer_servers.size())},
+        {"cluster_trace_scope", traffic_servers.size() > 1 ? "local_server_plus_peers" : "local_server"},
+        {"cluster_endpoints", [&]() {
+           std::ostringstream joined;
+           for (std::size_t i = 0; i < traffic_servers.size(); ++i) {
+             if (i > 0) {
+               joined << ",";
+             }
+             joined << traffic_servers[i];
+           }
+           return joined.str();
+         }()},
+        {"cluster_local_trace_endpoint", server_url},
         {"max_model_len", std::to_string(max_model_len)},
         {"trust_remote_code", config.trust_remote_code ? "true" : "false"},
+        {"discard_first_run", config.discard_first_run ? "true" : "false"},
         {"port", std::to_string(config.port)},
         {"tp", std::to_string(config.tp)},
         {"measurement_nvidia_smi_xml", nvidia_smi_snapshot_path.string()},

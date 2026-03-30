@@ -47,6 +47,7 @@ int main() {
       .metrics = {
           {
               .sample_time = 0.0,
+              .source = "cluster",
               .metric = "vllm:num_preemptions_total",
               .value = 1.0,
           },
@@ -76,6 +77,7 @@ int main() {
   expect_true(loaded.kernels.size() == 1, "expected one kernel row");
   expect_true(loaded.kernels[0].name == "sm80_xmma_gemm_bf16", "unexpected kernel name");
   expect_true(loaded.metrics.size() == 1, "expected one metric sample");
+  expect_true(loaded.metrics[0].source == "cluster", "unexpected metric source");
   expect_true(loaded.metrics[0].metric == "vllm:num_preemptions_total", "unexpected metric name");
   expect_true(loaded.metrics_summary.size() == 1, "expected one metric summary");
   expect_true(

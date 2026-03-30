@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS kernels (
 
 CREATE TABLE IF NOT EXISTS vllm_metrics (
     sample_time REAL NOT NULL,
+    source TEXT NOT NULL,
     metric TEXT NOT NULL,
     value REAL NOT NULL
 );
@@ -110,12 +111,28 @@ std::string column_text(sqlite3_stmt* stmt, int index) {
   return text == nullptr ? std::string() : reinterpret_cast<const char*>(text);
 }
 
+bool table_has_column(sqlite3* db, const std::string& table, const std::string& column) {
+  const auto pragma = "PRAGMA table_info(" + table + ")";
+  auto stmt = prepare(db, pragma.c_str());
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    if (column_text(stmt.get(), 1) == column) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 std::filesystem::path init_db(const std::filesystem::path& path) {
   std::filesystem::create_directories(path.parent_path());
   SqliteDbPtr db = open_db(path);
   exec_sql(db.get(), kSchema);
+  if (!table_has_column(db.get(), "vllm_metrics", "source")) {
+    exec_sql(
+        db.get(),
+        "ALTER TABLE vllm_metrics ADD COLUMN source TEXT NOT NULL DEFAULT ''");
+  }
   return path;
 }
 
@@ -172,13 +189,14 @@ std::filesystem::path save_profile(
   {
     auto stmt = prepare(
         db.get(),
-        "INSERT INTO vllm_metrics (sample_time, metric, value) VALUES (?, ?, ?)");
+        "INSERT INTO vllm_metrics (sample_time, source, metric, value) VALUES (?, ?, ?, ?)");
     for (const MetricSample& metric : profile.metrics) {
       sqlite3_reset(stmt.get());
       sqlite3_clear_bindings(stmt.get());
       sqlite3_bind_double(stmt.get(), 1, metric.sample_time);
-      bind_text(stmt.get(), 2, metric.metric);
-      sqlite3_bind_double(stmt.get(), 3, metric.value);
+      bind_text(stmt.get(), 2, metric.source);
+      bind_text(stmt.get(), 3, metric.metric);
+      sqlite3_bind_double(stmt.get(), 4, metric.value);
       if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(db.get()));
       }
@@ -263,15 +281,30 @@ ProfileData load_profile(const std::filesystem::path& path) {
   }
 
   {
+    const bool has_source = table_has_column(db.get(), "vllm_metrics", "source");
     auto stmt = prepare(
         db.get(),
-        "SELECT sample_time, metric, value FROM vllm_metrics ORDER BY sample_time ASC, metric ASC");
+        has_source
+            ? "SELECT sample_time, source, metric, value FROM vllm_metrics "
+              "ORDER BY sample_time ASC, source ASC, metric ASC"
+            : "SELECT sample_time, metric, value FROM vllm_metrics "
+              "ORDER BY sample_time ASC, metric ASC");
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-      profile.metrics.push_back(MetricSample{
-          .sample_time = sqlite3_column_double(stmt.get(), 0),
-          .metric = column_text(stmt.get(), 1),
-          .value = sqlite3_column_double(stmt.get(), 2),
-      });
+      if (has_source) {
+        profile.metrics.push_back(MetricSample{
+            .sample_time = sqlite3_column_double(stmt.get(), 0),
+            .source = column_text(stmt.get(), 1),
+            .metric = column_text(stmt.get(), 2),
+            .value = sqlite3_column_double(stmt.get(), 3),
+        });
+      } else {
+        profile.metrics.push_back(MetricSample{
+            .sample_time = sqlite3_column_double(stmt.get(), 0),
+            .source = "",
+            .metric = column_text(stmt.get(), 1),
+            .value = sqlite3_column_double(stmt.get(), 2),
+        });
+      }
     }
   }
 

@@ -51,4 +51,13 @@ TrafficRun fire_rl_traffic(
     std::int64_t input_len,
     std::uint32_t seed = 0);
 
+TrafficRun fire_rl_traffic(
+    const std::vector<std::string>& server_urls,
+    std::int64_t num_prompts,
+    std::int64_t rollouts_per_prompt,
+    std::int64_t min_tokens,
+    std::int64_t max_tokens,
+    std::int64_t input_len,
+    std::uint32_t seed = 0);
+
 }  // namespace rlprof
