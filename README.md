@@ -104,6 +104,50 @@ For a remote GPU host with a checked-out and built `rlprof` tree:
 
 This runs `vllm`, `nsys`, and the profiler on the remote host over SSH, then copies the core artifacts back locally and rewrites the saved artifact paths in the fetched `.db`.
 
+For repeatable controller-driven remote runs, save a target that uses an SSH alias or any other non-interactive SSH setup that plain `ssh` and `scp` can use directly:
+
+```sshconfig
+Host a10g-box
+  HostName gpu-host.example.com
+  User ubuntu
+  IdentityFile ~/.ssh/a10g.pem
+  IdentitiesOnly yes
+```
+
+```bash
+./build/rlprof target add a10g \
+  --host a10g-box \
+  --workdir /srv/rlprof \
+  --python /srv/rlprof/.venv/bin/python \
+  --vllm /srv/rlprof/.venv/bin/vllm
+
+./build/rlprof doctor --target a10g
+./build/rlprof target bootstrap a10g
+./build/rlprof bench \
+  --target a10g \
+  --kernel silu_and_mul \
+  --shapes 64x4096 \
+  --warmup 1 \
+  --n-iter 5 \
+  --repeats 1 \
+  --output .rlprof/bench_remote_smoke.json
+./build/rlprof profile \
+  --target a10g \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --prompts 1 \
+  --rollouts 1 \
+  --min-tokens 8 \
+  --max-tokens 8 \
+  --input-len 16 \
+  --output .rlprof/qwen_remote_smoke
+./build/rlprof recover \
+  --target a10g \
+  --remote-db /srv/rlprof/.rlprof/qwen_remote_smoke.db \
+  --output .rlprof/qwen_remote_smoke_recovered.db
+```
+
+If the remote `python3` and `vllm` are already on `PATH`, you can omit `--python` and `--vllm` when saving the target.
+
 For faster remote iteration, `rlprof` now skips copying the heavy remote `.nsys-rep` by default and only fetches the `.db`, `.sqlite`, telemetry XML, and server log. If you want the full report artifact locally too:
 
 ```bash
@@ -320,6 +364,8 @@ If you already have a server running, you can attach `rlprof` to its HTTP endpoi
 
 This is a fast path because it skips server launch, but it is currently metrics-only: no kernel trace is captured unless `rlprof` launched the server under `nsys`.
 
+`--attach-pid` is currently a fail-fast boundary. If the installed `nsys` does not advertise PID attach support, `rlprof` exits before sending traffic and prints the `nsys` capability error directly.
+
 ### Doctor
 
 ```bash
@@ -337,7 +383,7 @@ Remote environment checks:
 Save reusable SSH targets:
 
 ```bash
-./build/rlprof target add a10g --host ubuntu@a10g-box --workdir /srv/rlprof
+./build/rlprof target add a10g --host a10g-box --workdir /srv/rlprof --python /srv/rlprof/.venv/bin/python --vllm /srv/rlprof/.venv/bin/vllm
 ./build/rlprof target list
 ./build/rlprof target show a10g
 ./build/rlprof target remove a10g
@@ -349,7 +395,7 @@ Bootstrap a remote host from the current local checkout:
 ./build/rlprof target bootstrap a10g
 ```
 
-This streams the current repo to the remote workdir, then runs `cmake -S . -B build` and `cmake --build build` on the target.
+This streams the current repo to the remote workdir, then runs `cmake -S . -B build` and `cmake --build build --target rlprof` on the target.
 
 ### Recover
 
@@ -498,6 +544,7 @@ ctest --test-dir build --output-on-failure --schedule-random --repeat until-fail
 - `profile --attach URL` is metrics-only unless `rlprof` owns the server lifecycle under `nsys`.
 - `profile --target HOST --model ...` gives full remote profiling because `rlprof` can launch `vllm`, `nsys`, and artifact capture on the known host over SSH.
 - `profile --attach URL` without a target does not imply kernel visibility. It only has the HTTP endpoint, so it can scrape metrics and fire traffic, not trace kernels.
+- `profile --attach URL --attach-pid PID` is still a boundary. If the installed `nsys` does not advertise PID attach support, `rlprof` fails fast with a direct capability error instead of falling back to an ambiguous attach attempt.
 - `aggregate` provides per-node/profile rollup after the fact, but it does not synchronize trace windows across multiple remote nodes by itself.
 - `cluster-profile` coordinates synchronized start times across known hosts, but a real multi-host validation still requires more than one GPU host. Running multiple traced servers on the same single GPU host can still fail from normal VRAM limits.
 - Raw kernel names are authoritative. Category labels use NVTX overlap first, then runtime metadata, then conservative kernel-name matching.

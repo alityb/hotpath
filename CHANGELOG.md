@@ -12,3 +12,5 @@ Highlights:
 - SSH target registry, bootstrap, recover, and remote single-host profiling
 - profile stability mode, clock helpers, manifest generation, cleanup, soak runs, and cluster rollup
 - non-GPU CI and self-hosted GPU smoke workflow
+- controller-verified remote workflow using saved SSH targets, `target bootstrap`, `bench --target`, `profile --target`, and `recover`
+- explicit documented boundary for `profile --attach ... --attach-pid ...` when installed `nsys` does not expose PID attach support

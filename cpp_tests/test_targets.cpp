@@ -49,6 +49,10 @@ int main() {
   expect_true(direct.host == "ubuntu@direct-box", "expected direct host");
   expect_true(direct.workdir == "/tmp/rlprof", "expected direct workdir");
 
+  const auto alias = rlprof::resolve_target("gpu-a10g", "/opt/rlprof");
+  expect_true(alias.host == "gpu-a10g", "expected alias host fallback");
+  expect_true(alias.workdir == "/opt/rlprof", "expected alias workdir fallback");
+
   const auto rendered = rlprof::render_targets(listed);
   expect_true(rendered.find("TARGETS") != std::string::npos, "expected target table header");
   expect_true(rendered.find("ubuntu@a10g-box") != std::string::npos, "expected target host");
@@ -59,6 +63,8 @@ int main() {
   const auto bootstrap = rlprof::bootstrap_target_command(resolved, "/home/ubuntu/rlprof");
   expect_true(bootstrap.find("cmake -S . -B build") != std::string::npos,
               "expected bootstrap build command");
+  expect_true(bootstrap.find("cmake --build build --target rlprof") != std::string::npos,
+              "expected bootstrap rlprof target build");
 
   expect_true(rlprof::remove_target("a10g"), "expected target removal");
   expect_true(rlprof::list_targets().empty(), "expected empty target registry");

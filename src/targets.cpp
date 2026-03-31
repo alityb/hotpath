@@ -162,6 +162,11 @@ RemoteTarget resolve_target(const std::string& spec, const std::string& workdir_
   const auto targets = load_target_map();
   const auto it = targets.find(spec);
   if (it == targets.end()) {
+    if (!workdir_override.empty()) {
+      target.host = spec;
+      target.workdir = workdir_override;
+      return target;
+    }
     throw std::runtime_error("unknown target: " + spec);
   }
   target.host = it->second.host;
@@ -174,14 +179,14 @@ RemoteTarget resolve_target(const std::string& spec, const std::string& workdir_
 std::string bootstrap_target_command(
     const RemoteTarget& target,
     const std::string& local_repo_root) {
-  return "tar -C " + shell_escape(local_repo_root) +
+  return "COPYFILE_DISABLE=1 tar -C " + shell_escape(local_repo_root) +
          " --exclude=.git --exclude=build --exclude=.venv --exclude=.rlprof -cf - . | "
          "ssh " + shell_escape(target.host) + " " +
          shell_escape(
              "mkdir -p " + shell_escape(target.workdir) +
              " && tar -xf - -C " + shell_escape(target.workdir) +
              " && cd " + shell_escape(target.workdir) +
-             " && cmake -S . -B build && cmake --build build");
+             " && cmake -S . -B build && cmake --build build --target rlprof");
 }
 
 }  // namespace rlprof

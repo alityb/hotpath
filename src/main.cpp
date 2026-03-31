@@ -392,7 +392,7 @@ std::string try_run_command_capture(const std::string& command) {
 }
 
 std::string remote_bootstrap_check_script() {
-  return R"BOOT(bash -lc '
+  return R"BOOT(
 print_row() {
   printf "%-18s  %-6s  %s\n" "$1" "$2" "$3"
 }
@@ -571,11 +571,6 @@ std::string run_profile_command(
   if (effective_options.repeats <= 0) {
     throw std::runtime_error("--repeat must be > 0");
   }
-  if (effective_options.config.attach_pid > 0 &&
-      !rlprof::has_remote_target(effective_options.target)) {
-    throw std::runtime_error("--attach-pid requires --target HOST");
-  }
-
   if (rlprof::has_remote_target(effective_options.target)) {
     if (!effective_options.config.attach_server.empty() &&
         effective_options.config.attach_pid <= 0) {
