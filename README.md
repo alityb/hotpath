@@ -1,6 +1,6 @@
 # rlprof
 
-`rlprof` is a measurement tool for profiling vLLM inference under RL-style rollout workloads.
+`rlprof` is a measurement tool for profiling vLLM inference under RL-style rollout workloads. It is designed for cases where request-level metrics are not enough and you need direct visibility into kernel execution, server-side pressure, and traffic shape to explain throughput or latency behavior.
 
 It records:
 - CUDA kernel timing from `nsys`
@@ -9,6 +9,27 @@ It records:
 - optional benchmark results for selected GPU kernels
 
 `rlprof` stores collected data in SQLite and reports raw numbers. It is not a training framework, dashboard, or optimization layer.
+
+## Example Use
+
+Profile a local vLLM server lifecycle:
+
+```bash
+rlprof profile \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --prompts 1 \
+  --rollouts 1 \
+  --min-tokens 8 \
+  --max-tokens 8 \
+  --input-len 16 \
+  --output .rlprof/local_smoke
+```
+
+Inspect the resulting profile:
+
+```bash
+rlprof report .rlprof/local_smoke.db
+```
 
 ## Install
 
