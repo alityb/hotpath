@@ -34,6 +34,7 @@ struct TrafficStats {
   std::optional<double> completion_length_p99;
   std::optional<double> max_median_ratio;
   std::int64_t errors;
+  std::int64_t completion_length_samples = 0;
 };
 
 std::string render_report(

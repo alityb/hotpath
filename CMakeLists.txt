@@ -183,6 +183,13 @@ if(BUILD_TESTING)
   add_test(NAME test_validate COMMAND test_validate)
 
   add_executable(
+    test_traffic
+    cpp_tests/test_traffic.cpp
+  )
+  target_link_libraries(test_traffic PRIVATE rlprof_core)
+  add_test(NAME test_traffic COMMAND test_traffic)
+
+  add_executable(
     test_remote
     cpp_tests/test_remote.cpp
   )
@@ -209,6 +216,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_interactive PRIVATE rlprof_interactive)
   add_test(NAME test_interactive COMMAND test_interactive)
+
+  add_executable(
+    test_cli
+    cpp_tests/test_cli.cpp
+  )
+  add_dependencies(test_cli rlprof)
+  add_test(NAME test_cli COMMAND test_cli)
 endif()
 
 add_executable(

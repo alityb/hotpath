@@ -103,6 +103,9 @@ bool has_positional_arg(const Args& args) {
 std::filesystem::path latest_profile_path() {
   namespace fs = std::filesystem;
   const fs::path dir = ".rlprof";
+  if (!fs::exists(dir) || !fs::is_directory(dir)) {
+    throw std::runtime_error("No profile database found in .rlprof/");
+  }
   fs::path latest;
   std::filesystem::file_time_type latest_time;
   for (const auto& entry : fs::directory_iterator(dir)) {
@@ -205,9 +208,15 @@ bool command_succeeds(const std::string& command) {
 std::string trim(std::string value);
 std::string run_command_capture(const std::string& command);
 
+std::string sha256_command(const std::string& escaped_path) {
+  return "(if command -v sha256sum >/dev/null 2>&1; then sha256sum " + escaped_path +
+         "; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 " + escaped_path +
+         "; else openssl dgst -sha256 " + escaped_path +
+         "; fi) | awk 'NF {print $NF}'";
+}
+
 std::string local_sha256(const std::filesystem::path& path) {
-  return trim(run_command_capture(
-      "sha256sum " + shell_escape(path.string()) + " | awk '{print $1}'"));
+  return trim(run_command_capture(sha256_command(shell_escape(path.string()))));
 }
 
 std::string with_extension(const std::filesystem::path& path, const std::string& extension) {
@@ -519,6 +528,7 @@ std::string optional_json(const std::optional<double>& value) {
 std::string render_traffic_json(const rlprof::TrafficStats& stats) {
   return "{"
          "\"total_requests\":" + std::to_string(stats.total_requests) +
+         ",\"completion_length_samples\":" + std::to_string(stats.completion_length_samples) +
          ",\"completion_length_mean\":" + optional_json(stats.completion_length_mean) +
          ",\"completion_length_p50\":" + optional_json(stats.completion_length_p50) +
          ",\"completion_length_p99\":" + optional_json(stats.completion_length_p99) +
@@ -1515,53 +1525,7 @@ int handle_bench_compare(const Args& args) {
       run_command_capture("cat " + shell_escape(args[1])));
   const auto right = rlprof::bench::parse_bench_json(
       run_command_capture("cat " + shell_escape(args[2])));
-
-  struct Row {
-    std::string key;
-    double left_us = 0.0;
-    double right_us = 0.0;
-  };
-  std::map<std::string, Row> rows;
-  auto add = [&](const rlprof::bench::BenchRunOutput& output, bool is_left) {
-    for (const auto& result : output.results) {
-      std::ostringstream key;
-      key << result.kernel << " | " << result.implementation << " | ";
-      for (std::size_t i = 0; i < result.shape.size(); ++i) {
-        if (i > 0) {
-          key << "x";
-        }
-        key << result.shape[i];
-      }
-      auto& row = rows[key.str()];
-      row.key = key.str();
-      if (is_left) {
-        row.left_us = result.avg_ms * 1000.0;
-      } else {
-        row.right_us = result.avg_ms * 1000.0;
-      }
-    }
-  };
-  add(left, true);
-  add(right, false);
-
-  std::ostringstream out;
-  out << std::left << std::setw(48) << "benchmark" << "  "
-      << std::right << std::setw(10) << "A avg us" << "  "
-      << std::setw(10) << "B avg us" << "  "
-      << std::setw(10) << "delta us" << "  "
-      << std::setw(8) << "delta %\n";
-  out << std::string(94, '-') << "\n";
-  for (const auto& [_, row] : rows) {
-    const double delta = row.right_us - row.left_us;
-    const double delta_pct = row.left_us == 0.0 ? 0.0 : (delta / row.left_us) * 100.0;
-    out << std::left << std::setw(48) << row.key << "  "
-        << std::right << std::fixed << std::setprecision(3)
-        << std::setw(10) << row.left_us << "  "
-        << std::setw(10) << row.right_us << "  "
-        << std::setw(10) << delta << "  "
-        << std::setw(8) << delta_pct << "\n";
-  }
-  std::cout << out.str();
+  std::cout << rlprof::bench::render_bench_comparison(left, right);
   return 0;
 }
 
@@ -1598,6 +1562,24 @@ int handle_traffic(const Args& args) {
 
   if (servers.empty()) {
     throw std::runtime_error("--server or --servers is required");
+  }
+  if (prompts <= 0) {
+    throw std::runtime_error("--prompts must be > 0");
+  }
+  if (rollouts_per_prompt <= 0) {
+    throw std::runtime_error("--rollouts-per-prompt must be > 0");
+  }
+  if (input_len <= 0) {
+    throw std::runtime_error("--input-len must be > 0");
+  }
+  if (min_tokens <= 0) {
+    throw std::runtime_error("--min-tokens must be > 0");
+  }
+  if (max_tokens <= 0) {
+    throw std::runtime_error("--max-tokens must be > 0");
+  }
+  if (min_tokens > max_tokens) {
+    throw std::runtime_error("--min-tokens must be <= --max-tokens");
   }
 
   const auto run = rlprof::fire_rl_traffic(
@@ -2658,7 +2640,21 @@ int main(int argc, char** argv) {
       return handle_reset_defaults(args);
     }
 
-    if (command == "export" && !has_positional_arg(args) && !has_flag(args, "--help")) {
+    if (command == "export" && !has_flag(args, "--help")) {
+      bool export_has_path = false;
+      for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--format") {
+          require_value(args, i, "--format");
+          continue;
+        }
+        if (!args[i].starts_with("--")) {
+          export_has_path = true;
+          break;
+        }
+      }
+      if (export_has_path) {
+        return handle_export(args);
+      }
       std::string default_format = "csv";
       for (std::size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--format") {

@@ -106,6 +106,13 @@ std::optional<double> string_to_optional_double(const std::string& value) {
   return std::stod(value);
 }
 
+std::int64_t string_to_i64_or(const std::string& value, std::int64_t fallback) {
+  if (value.empty()) {
+    return fallback;
+  }
+  return std::stoll(value);
+}
+
 std::string column_text(sqlite3_stmt* stmt, int index) {
   const unsigned char* text = sqlite3_column_text(stmt, index);
   return text == nullptr ? std::string() : reinterpret_cast<const char*>(text);
@@ -125,7 +132,9 @@ bool table_has_column(sqlite3* db, const std::string& table, const std::string& 
 }  // namespace
 
 std::filesystem::path init_db(const std::filesystem::path& path) {
-  std::filesystem::create_directories(path.parent_path());
+  if (!path.parent_path().empty()) {
+    std::filesystem::create_directories(path.parent_path());
+  }
   SqliteDbPtr db = open_db(path);
   exec_sql(db.get(), kSchema);
   if (!table_has_column(db.get(), "vllm_metrics", "source")) {
@@ -229,6 +238,7 @@ std::filesystem::path save_profile(
         {"completion_length_p99", optional_to_string(profile.traffic_stats.completion_length_p99)},
         {"max_median_ratio", optional_to_string(profile.traffic_stats.max_median_ratio)},
         {"errors", std::to_string(profile.traffic_stats.errors)},
+        {"completion_length_samples", std::to_string(profile.traffic_stats.completion_length_samples)},
     };
     for (const auto& [key, value] : traffic_rows) {
       sqlite3_reset(stmt.get());
@@ -334,13 +344,23 @@ ProfileData load_profile(const std::filesystem::path& path) {
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
       traffic_map[column_text(stmt.get(), 0)] = column_text(stmt.get(), 1);
     }
+    const std::int64_t total_requests = string_to_i64_or(traffic_map["total_requests"], 0);
+    const std::int64_t errors = string_to_i64_or(traffic_map["errors"], 0);
+    const auto completion_length_mean =
+        string_to_optional_double(traffic_map["completion_length_mean"]);
+    std::int64_t completion_length_samples =
+        string_to_i64_or(traffic_map["completion_length_samples"], 0);
+    if (completion_length_samples == 0 && completion_length_mean.has_value()) {
+      completion_length_samples = std::max<std::int64_t>(0, total_requests - errors);
+    }
     profile.traffic_stats = TrafficStats{
-        .total_requests = std::stoll(traffic_map["total_requests"]),
-        .completion_length_mean = string_to_optional_double(traffic_map["completion_length_mean"]),
+        .total_requests = total_requests,
+        .completion_length_mean = completion_length_mean,
         .completion_length_p50 = string_to_optional_double(traffic_map["completion_length_p50"]),
         .completion_length_p99 = string_to_optional_double(traffic_map["completion_length_p99"]),
         .max_median_ratio = string_to_optional_double(traffic_map["max_median_ratio"]),
-        .errors = std::stoll(traffic_map["errors"]),
+        .errors = errors,
+        .completion_length_samples = completion_length_samples,
     };
   }
 

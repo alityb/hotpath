@@ -41,6 +41,13 @@ std::string remote_env_prefix(const RemoteTarget& target) {
   return prefix;
 }
 
+std::string portable_sha256_command(const std::string& escaped_path) {
+  return "(if command -v sha256sum >/dev/null 2>&1; then sha256sum " + escaped_path +
+         "; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 " + escaped_path +
+         "; else openssl dgst -sha256 " + escaped_path +
+         "; fi) | awk 'NF {print $NF}'";
+}
+
 }  // namespace
 
 bool has_remote_target(const RemoteTarget& target) {
@@ -78,7 +85,7 @@ std::string remote_checksum_command(
     const RemoteTarget& target,
     const std::string& remote_path) {
   const std::string remote_command =
-      "sha256sum " + shell_escape(remote_path) + " | awk '{print $1}'";
+      portable_sha256_command(shell_escape(remote_path));
   return "ssh " + shell_escape(target.host) + " " + shell_escape(remote_command);
 }
 

@@ -490,6 +490,72 @@ std::string render_bench_results(const std::vector<BenchResult>& results) {
   });
 }
 
+std::string render_bench_comparison(
+    const BenchRunOutput& left,
+    const BenchRunOutput& right) {
+  struct Row {
+    std::string key;
+    std::optional<double> left_us;
+    std::optional<double> right_us;
+  };
+
+  std::map<std::string, Row> rows;
+  const auto add = [&](const BenchRunOutput& output, bool is_left) {
+    for (const auto& result : output.results) {
+      std::ostringstream key;
+      key << result.kernel << " | " << result.implementation << " | ";
+      for (std::size_t i = 0; i < result.shape.size(); ++i) {
+        if (i > 0) {
+          key << "x";
+        }
+        key << result.shape[i];
+      }
+      auto& row = rows[key.str()];
+      row.key = key.str();
+      if (is_left) {
+        row.left_us = result.avg_ms * 1000.0;
+      } else {
+        row.right_us = result.avg_ms * 1000.0;
+      }
+    }
+  };
+  add(left, true);
+  add(right, false);
+
+  const auto format_optional = [](const std::optional<double>& value) {
+    if (!value.has_value()) {
+      return std::string("missing");
+    }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << *value;
+    return out.str();
+  };
+
+  std::ostringstream out;
+  out << std::left << std::setw(48) << "benchmark" << "  "
+      << std::right << std::setw(10) << "A avg us" << "  "
+      << std::setw(10) << "B avg us" << "  "
+      << std::setw(10) << "delta us" << "  "
+      << std::setw(10) << "delta %" << "\n";
+  out << std::string(98, '-') << "\n";
+  for (const auto& [_, row] : rows) {
+    std::optional<double> delta;
+    std::optional<double> delta_pct;
+    if (row.left_us.has_value() && row.right_us.has_value()) {
+      delta = *row.right_us - *row.left_us;
+      if (*row.left_us != 0.0) {
+        delta_pct = (*delta / *row.left_us) * 100.0;
+      }
+    }
+    out << std::left << std::setw(48) << row.key << "  "
+        << std::right << std::setw(10) << format_optional(row.left_us) << "  "
+        << std::setw(10) << format_optional(row.right_us) << "  "
+        << std::setw(10) << format_optional(delta) << "  "
+        << std::setw(10) << format_optional(delta_pct) << "\n";
+  }
+  return out.str();
+}
+
 std::string serialize_bench_output_json(const BenchRunOutput& output) {
   std::ostringstream out;
   out << "{";

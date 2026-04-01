@@ -19,6 +19,36 @@ void expect_contains(const std::string& haystack, const std::string& needle) {
 }  // namespace
 
 int main() {
+  const std::string partial_metadata_report = rlprof::render_report(
+      rlprof::ReportMeta{
+          .model_name = "Qwen/Qwen3-8B",
+          .gpu_name = "NVIDIA A10G",
+          .vllm_version = "v0.1.0",
+          .prompts = 1,
+          .rollouts = 1,
+          .max_tokens = 16,
+      },
+      std::map<std::string, std::string>{
+          {"measurement_driver_version", "570.12"},
+          {"measurement_gpu_clock_policy", "unlocked"},
+          {"measurement_sm_clock_avg_mhz", "1350"},
+      },
+      {},
+      {},
+      rlprof::TrafficStats{
+          .total_requests = 0,
+          .completion_length_mean = std::nullopt,
+          .completion_length_p50 = std::nullopt,
+          .completion_length_p99 = std::nullopt,
+          .max_median_ratio = std::nullopt,
+          .errors = 0,
+      });
+  expect_contains(partial_metadata_report, "MEASUREMENT CONTEXT");
+  if (partial_metadata_report.find("sm clock (min/avg/max mhz)") != std::string::npos) {
+    std::cerr << "partial measurement metadata should not render incomplete clock rows\n";
+    return 1;
+  }
+
   const std::string report = rlprof::render_report(
       rlprof::ReportMeta{
           .model_name = "Qwen/Qwen3-8B",
@@ -43,6 +73,10 @@ int main() {
           {"measurement_power_draw_avg_w", "180"},
           {"measurement_power_draw_peak_w", "220"},
           {"measurement_power_limit_w", "300"},
+          {"warning_aggregate_traffic_percentiles", "true"},
+          {"aggregate_completion_length_p50_upper_bound", "1204"},
+          {"aggregate_completion_length_p99_upper_bound", "3891"},
+          {"aggregate_max_median_ratio_upper_bound", "3.23"},
           {"warning_gpu_clocks_unlocked", "true"},
           {"warning_temp_high", "true"},
       },
@@ -104,9 +138,9 @@ int main() {
       rlprof::TrafficStats{
           .total_requests = 1024,
           .completion_length_mean = 1847.0,
-          .completion_length_p50 = 1204.0,
-          .completion_length_p99 = 3891.0,
-          .max_median_ratio = 3.23,
+          .completion_length_p50 = std::nullopt,
+          .completion_length_p99 = std::nullopt,
+          .max_median_ratio = std::nullopt,
           .errors = 0,
       });
 
@@ -117,6 +151,7 @@ int main() {
   expect_contains(report, "v0.1.0");
   expect_contains(report, "conservative substring matching");
   expect_contains(report, "WARNINGS");
+  expect_contains(report, "aggregate traffic p50/p99/max-median values are upper bounds");
   expect_contains(report, "GPU clocks are not locked. Run `rlprof lock-clocks`");
   expect_contains(report, "gpu temperature reached high operating range");
   expect_contains(report, "MEASUREMENT CONTEXT");
@@ -133,10 +168,15 @@ int main() {
   expect_contains(report, "Kernel2");
   expect_contains(report, "VLLM SERVER METRICS");
   expect_contains(report, "preemptions");
+  expect_contains(report, "72.0%");
+  expect_contains(report, "97.0%");
   expect_contains(report, "892.1");
   expect_contains(report, "TRAFFIC SHAPE");
   expect_contains(report, "1,024");
   expect_contains(report, "3.23x");
+  expect_contains(report, "completion length p50 ub");
+  expect_contains(report, "completion length p99 ub");
+  expect_contains(report, "max/median ratio ub");
 
   return 0;
 }

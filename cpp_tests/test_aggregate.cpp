@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -37,7 +38,7 @@ int main() {
       .shared_mem = 64,
   }};
   left.metrics = {{.sample_time = 0.0, .source = "node0", .metric = "vllm:num_requests_running", .value = 2.0}};
-  left.traffic_stats = {.total_requests = 4, .completion_length_mean = 10.0, .completion_length_p50 = 8.0, .completion_length_p99 = 12.0, .max_median_ratio = 1.5, .errors = 1};
+  left.traffic_stats = {.total_requests = 4, .completion_length_mean = 10.0, .completion_length_p50 = 8.0, .completion_length_p99 = 12.0, .max_median_ratio = 1.5, .errors = 1, .completion_length_samples = 2};
   const fs::path left_path = temp_root / "left.db";
   rlprof::save_profile(left_path, left);
 
@@ -51,6 +52,7 @@ int main() {
   right.traffic_stats.completion_length_mean = 20.0;
   right.traffic_stats.completion_length_p99 = 24.0;
   right.traffic_stats.errors = 0;
+  right.traffic_stats.completion_length_samples = 5;
   const fs::path right_path = temp_root / "right.db";
   rlprof::save_profile(right_path, right);
 
@@ -64,8 +66,32 @@ int main() {
   expect_true(aggregate.traffic_stats.errors == 1, "expected total error sum");
   expect_true(
       aggregate.traffic_stats.completion_length_mean.has_value() &&
-          *aggregate.traffic_stats.completion_length_mean == 16.0,
-      "expected weighted completion mean");
+          std::abs(*aggregate.traffic_stats.completion_length_mean - (120.0 / 7.0)) < 1e-9,
+      "expected completion mean weighted by observed completion samples");
+  expect_true(
+      aggregate.traffic_stats.completion_length_samples == 7,
+      "expected completion sample count sum");
+  expect_true(
+      !aggregate.traffic_stats.completion_length_p50.has_value(),
+      "aggregate p50 should not pretend to be exact");
+  expect_true(
+      !aggregate.traffic_stats.completion_length_p99.has_value(),
+      "aggregate p99 should not pretend to be exact");
+  expect_true(
+      !aggregate.traffic_stats.max_median_ratio.has_value(),
+      "aggregate max/median ratio should not pretend to be exact");
+  expect_true(
+      aggregate.meta.at("warning_aggregate_traffic_percentiles") == "true",
+      "expected aggregate percentile warning");
+  expect_true(
+      aggregate.meta.at("aggregate_completion_length_p50_upper_bound") == "8.000000",
+      "expected p50 upper bound metadata");
+  expect_true(
+      aggregate.meta.at("aggregate_completion_length_p99_upper_bound") == "24.000000",
+      "expected p99 upper bound metadata");
+  expect_true(
+      aggregate.meta.at("aggregate_max_median_ratio_upper_bound") == "1.500000",
+      "expected max/median upper bound metadata");
 
   fs::remove_all(temp_root);
   return 0;

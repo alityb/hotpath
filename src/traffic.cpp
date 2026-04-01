@@ -17,6 +17,45 @@
 namespace rlprof {
 namespace {
 
+void validate_traffic_request_shape(
+    std::int64_t num_prompts,
+    std::int64_t rollouts_per_prompt,
+    std::int64_t input_len,
+    std::int64_t min_tokens,
+    std::int64_t max_tokens) {
+  if (num_prompts <= 0) {
+    throw std::runtime_error("num_prompts must be > 0");
+  }
+  if (rollouts_per_prompt <= 0) {
+    throw std::runtime_error("rollouts_per_prompt must be > 0");
+  }
+  if (input_len <= 0) {
+    throw std::runtime_error("input_len must be > 0");
+  }
+  if (min_tokens <= 0) {
+    throw std::runtime_error("min_tokens must be > 0");
+  }
+  if (max_tokens <= 0) {
+    throw std::runtime_error("max_tokens must be > 0");
+  }
+  if (min_tokens > max_tokens) {
+    throw std::runtime_error("min_tokens must be <= max_tokens");
+  }
+}
+
+std::string shell_escape(const std::string& input) {
+  std::string output = "'";
+  for (char ch : input) {
+    if (ch == '\'') {
+      output += "'\\''";
+    } else {
+      output.push_back(ch);
+    }
+  }
+  output += "'";
+  return output;
+}
+
 std::string json_escape(const std::string& input) {
   std::string output;
   output.reserve(input.size());
@@ -56,7 +95,8 @@ std::pair<long, std::string> run_curl_json(
   const std::string command =
       "curl -sS -o - -w '\\n%{http_code}' -H 'Content-Type: application/json' "
       "-X POST --data @" +
-      temp_path.string() + " " + server_url + "/v1/completions";
+      shell_escape(temp_path.string()) + " " +
+      shell_escape(server_url + "/v1/completions");
 
   std::array<char, 4096> buffer{};
   std::string output;
@@ -82,11 +122,11 @@ std::pair<long, std::string> run_curl_json(
   return {status, output.substr(0, split)};
 }
 
-std::int64_t parse_completion_tokens(const std::string& body, std::int64_t fallback) {
+std::optional<std::int64_t> parse_completion_tokens(const std::string& body) {
   const std::string needle = "\"completion_tokens\":";
   const std::size_t start = body.find(needle);
   if (start == std::string::npos) {
-    return fallback;
+    return std::nullopt;
   }
 
   std::size_t index = start + needle.size();
@@ -98,7 +138,7 @@ std::int64_t parse_completion_tokens(const std::string& body, std::int64_t fallb
     ++end;
   }
   if (end == index) {
-    return fallback;
+    return std::nullopt;
   }
   return std::stoll(body.substr(index, end - index));
 }
@@ -119,6 +159,12 @@ std::vector<TrafficRequest> generate_requests(
     std::int64_t min_tokens,
     std::int64_t max_tokens,
     std::uint32_t seed) {
+  validate_traffic_request_shape(
+      num_prompts,
+      rollouts_per_prompt,
+      input_len,
+      min_tokens,
+      max_tokens);
   std::mt19937 rng(seed);
   std::uniform_int_distribution<std::int64_t> lengths(min_tokens, max_tokens);
   std::vector<TrafficRequest> requests;
@@ -153,7 +199,7 @@ TrafficResult send_request(
     return TrafficResult{
         .ok = status >= 200 && status < 300,
         .http_status = status,
-        .completion_tokens = parse_completion_tokens(body, request.output_len),
+        .completion_tokens = parse_completion_tokens(body),
         .body = body,
         .error = "",
     };
@@ -161,7 +207,7 @@ TrafficResult send_request(
     return TrafficResult{
         .ok = false,
         .http_status = 0,
-        .completion_tokens = 0,
+        .completion_tokens = std::nullopt,
         .body = "",
         .error = exc.what(),
     };
@@ -178,9 +224,10 @@ TrafficStats summarize_traffic(
       ++errors;
       continue;
     }
-    lengths.push_back(results[index].completion_tokens > 0
-                          ? results[index].completion_tokens
-                          : requests[index].output_len);
+    if (results[index].completion_tokens.has_value() &&
+        *results[index].completion_tokens >= 0) {
+      lengths.push_back(*results[index].completion_tokens);
+    }
   }
 
   if (lengths.empty()) {
@@ -209,6 +256,7 @@ TrafficStats summarize_traffic(
       .completion_length_p99 = p99,
       .max_median_ratio = p50 == 0.0 ? std::nullopt : std::optional<double>(*max_it / p50),
       .errors = errors,
+      .completion_length_samples = static_cast<std::int64_t>(lengths.size()),
   };
 }
 

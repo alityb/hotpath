@@ -35,6 +35,17 @@ std::string shell_escape(const std::string& value) {
   return escaped;
 }
 
+std::string join_shell_args(const std::vector<std::string>& args) {
+  std::ostringstream out;
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) {
+      out << " ";
+    }
+    out << shell_escape(args[i]);
+  }
+  return out.str();
+}
+
 std::string run_command(const std::string& command) {
   std::array<char, 4096> buffer{};
   std::string output;
@@ -135,8 +146,8 @@ std::int64_t listening_pid_for_port(std::int64_t port) {
 
 bool server_ready(const std::string& server_url) {
   return std::system(
-             ("curl -fsS --connect-timeout 1 --max-time 1 " + server_url +
-              "/metrics >/dev/null 2>&1")
+             ("curl -fsS --connect-timeout 1 --max-time 1 " +
+              shell_escape(server_url + "/metrics") + " >/dev/null 2>&1")
                  .c_str()) == 0;
 }
 
@@ -269,7 +280,8 @@ std::int64_t start_background_command(
     const std::string& command,
     const std::filesystem::path& log_path) {
   const std::string wrapped =
-      "bash -lc '" + command + " > " + log_path.string() + " 2>&1 & echo $!'";
+      "bash -lc " +
+      shell_escape(command + " > " + shell_escape(log_path.string()) + " 2>&1 & echo $!");
   return std::stoll(trim(run_command(wrapped)));
 }
 
@@ -297,14 +309,29 @@ ManagedServerState start_managed_server(const ManagedServerConfig& config) {
   std::filesystem::create_directories(output_prefix.parent_path());
   const std::string session_name = make_session_name(config.name);
   const std::string server_url = "http://127.0.0.1:" + std::to_string(config.port);
-  const std::string serve_command =
-      "VLLM_WORKER_MULTIPROC_METHOD=spawn nsys launch --trace=cuda,nvtx,osrt "
-      "--session-new " + session_name + " --wait=all " + vllm_binary() +
-      " serve " + config.model +
-      " --port " + std::to_string(config.port) +
-      " --tensor-parallel-size " + std::to_string(config.tp) +
-      " --max-model-len " + std::to_string(config.max_model_len) +
-      (config.trust_remote_code ? " --trust-remote-code" : "");
+  std::vector<std::string> command = {
+      "env",
+      "VLLM_WORKER_MULTIPROC_METHOD=spawn",
+      "nsys",
+      "launch",
+      "--trace=cuda,nvtx,osrt",
+      "--session-new",
+      session_name,
+      "--wait=all",
+      vllm_binary(),
+      "serve",
+      config.model,
+      "--port",
+      std::to_string(config.port),
+      "--tensor-parallel-size",
+      std::to_string(config.tp),
+      "--max-model-len",
+      std::to_string(config.max_model_len),
+  };
+  if (config.trust_remote_code) {
+    command.push_back("--trust-remote-code");
+  }
+  const std::string serve_command = join_shell_args(command);
 
   const std::int64_t launcher_pid = start_background_command(serve_command, log_path);
   wait_for_server_ready_or_throw(launcher_pid, server_url, config.startup_timeout_s, log_path);

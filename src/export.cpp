@@ -28,6 +28,9 @@ std::vector<std::pair<std::string, std::string>> export_warnings(
   add_warning("warning_any_clock_throttle", "clock throttling reasons were active");
   add_warning("warning_temp_high", "gpu temperature reached high operating range");
   add_warning(
+      "warning_aggregate_traffic_percentiles",
+      "aggregate traffic p50/p99/max-median values are upper bounds from member runs, not exact combined percentiles");
+  add_warning(
       "warning_gpu_clocks_unlocked",
       "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements. See: docs.nvidia.com/deploy/nvidia-smi/index.html");
   return warnings;
@@ -156,6 +159,7 @@ std::vector<std::filesystem::path> export_profile(
     out << "  ],\n";
     out << "  \"traffic_stats\": {\n";
     out << "    \"total_requests\": " << profile.traffic_stats.total_requests << ",\n";
+    out << "    \"completion_length_samples\": " << profile.traffic_stats.completion_length_samples << ",\n";
     out << "    \"completion_length_mean\": " << optional_json(profile.traffic_stats.completion_length_mean) << ",\n";
     out << "    \"completion_length_p50\": " << optional_json(profile.traffic_stats.completion_length_p50) << ",\n";
     out << "    \"completion_length_p99\": " << optional_json(profile.traffic_stats.completion_length_p99) << ",\n";
@@ -227,6 +231,7 @@ std::vector<std::filesystem::path> export_profile(
     std::vector<std::string> traffic_lines = {
         "key,value",
         "total_requests," + std::to_string(profile.traffic_stats.total_requests),
+        "completion_length_samples," + std::to_string(profile.traffic_stats.completion_length_samples),
         "completion_length_mean," + optional_csv(profile.traffic_stats.completion_length_mean),
         "completion_length_p50," + optional_csv(profile.traffic_stats.completion_length_p50),
         "completion_length_p99," + optional_csv(profile.traffic_stats.completion_length_p99),

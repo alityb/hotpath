@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 
+#include <sqlite3.h>
+
 #include "rlprof/store.h"
 
 namespace {
@@ -85,7 +87,48 @@ int main() {
       "unexpected metric summary peak");
   expect_true(loaded.traffic_stats.total_requests == 1024, "unexpected traffic total");
   expect_true(loaded.traffic_stats.errors == 0, "unexpected traffic errors");
+  expect_true(loaded.traffic_stats.completion_length_samples == 0, "unexpected traffic sample count");
+
+  const fs::path cwd_root = temp_dir / "cwd";
+  fs::create_directories(cwd_root);
+  const auto original_cwd = fs::current_path();
+  fs::current_path(cwd_root);
+  try {
+    const fs::path cwd_db = "profile.db";
+    rlprof::save_profile(cwd_db, profile);
+    expect_true(fs::exists(cwd_db), "expected save_profile to support bare filename output");
+    const rlprof::ProfileData cwd_loaded = rlprof::load_profile(cwd_db);
+    expect_true(cwd_loaded.meta == profile.meta, "cwd meta round-trip mismatch");
+    fs::remove(cwd_db);
+  } catch (...) {
+    fs::current_path(original_cwd);
+    throw;
+  }
+  fs::current_path(original_cwd);
+
+  const fs::path partial_db = temp_dir / "partial_traffic.db";
+  rlprof::save_profile(partial_db, profile);
+  sqlite3* db = nullptr;
+  if (sqlite3_open(partial_db.c_str(), &db) != SQLITE_OK) {
+    std::cerr << "failed to open sqlite db for partial traffic test\n";
+    return 1;
+  }
+  char* err = nullptr;
+  sqlite3_exec(db, "DELETE FROM traffic_stats WHERE key IN ('total_requests','errors','completion_length_samples');", nullptr, nullptr, &err);
+  if (err != nullptr) {
+    std::cerr << err << "\n";
+    sqlite3_free(err);
+    sqlite3_close(db);
+    return 1;
+  }
+  sqlite3_close(db);
+
+  const rlprof::ProfileData partial_loaded = rlprof::load_profile(partial_db);
+  expect_true(partial_loaded.traffic_stats.total_requests == 0, "missing total_requests should default to zero");
+  expect_true(partial_loaded.traffic_stats.errors == 0, "missing errors should default to zero");
+  expect_true(partial_loaded.traffic_stats.completion_length_samples == 0, "missing completion sample count should default to zero");
 
   fs::remove(db_path);
+  fs::remove(partial_db);
   return 0;
 }

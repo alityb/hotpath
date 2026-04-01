@@ -4,10 +4,12 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <map>
 
 #include <sqlite3.h>
 
 #include "rlprof/export.h"
+#include "rlprof/profiler/vllm_metrics.h"
 #include "rlprof/store.h"
 #include "rlprof/validate.h"
 
@@ -144,6 +146,18 @@ int main() {
   expect_true(
       status_for(checks, "metrics summary") == rlprof::ValidationStatus::kPass,
       "expected metrics summary validation pass");
+
+  profile.metrics.push_back(
+      {.sample_time = 0.0,
+       .source = "peer1",
+       .metric = "vllm:num_preemptions_total",
+       .value = 100.0});
+  profile.metrics_summary = rlprof::profiler::summarize_samples(profile.metrics);
+  rlprof::save_profile(db_path, profile);
+  const auto mixed_source_checks = rlprof::validate_profile(db_path);
+  expect_true(
+      status_for(mixed_source_checks, "metrics summary") == rlprof::ValidationStatus::kPass,
+      "expected mixed-source metrics summary validation pass");
 
   const auto rendered =
       rlprof::render_validation_report(db_path, checks, false);

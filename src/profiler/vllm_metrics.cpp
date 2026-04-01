@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace rlprof::profiler {
@@ -48,6 +50,19 @@ std::string run_command(const std::string& command) {
   return output;
 }
 
+std::string shell_escape(const std::string& value) {
+  std::string escaped = "'";
+  for (char ch : value) {
+    if (ch == '\'') {
+      escaped += "'\\''";
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped += "'";
+  return escaped;
+}
+
 double now_seconds() {
   using Clock = std::chrono::system_clock;
   const auto now = Clock::now().time_since_epoch();
@@ -61,10 +76,15 @@ bool aggregate_by_average(const std::string& metric) {
          metric.find("_seconds_p99") != std::string::npos;
 }
 
+bool can_aggregate_cluster_metric(const std::string& metric) {
+  return metric.find("_seconds_p50") == std::string::npos &&
+         metric.find("_seconds_p99") == std::string::npos;
+}
+
 }  // namespace
 
-std::unordered_map<std::string, double> parse_metrics_text(const std::string& text) {
-  std::unordered_map<std::string, double> metrics;
+std::vector<std::pair<std::string, double>> parse_metrics_text(const std::string& text) {
+  std::vector<std::pair<std::string, double>> metrics;
   std::istringstream stream(text);
   std::string line;
 
@@ -86,7 +106,7 @@ std::unordered_map<std::string, double> parse_metrics_text(const std::string& te
     if (!kKeyMetrics.contains(metric_name)) {
       continue;
     }
-    metrics[metric_name] = std::stod(value_text);
+    metrics.emplace_back(metric_name, std::stod(value_text));
   }
 
   return metrics;
@@ -149,7 +169,8 @@ std::vector<MetricSample> fetch_metrics_once(
 
   for (const auto& endpoint : endpoints) {
     try {
-      const std::string command = "curl -fsS " + endpoint.server_url + "/metrics";
+      const std::string command =
+          "curl -fsS " + shell_escape(endpoint.server_url + "/metrics");
       const std::string body = run_command(command);
       for (const auto& [metric, value] : parse_metrics_text(body)) {
         if (endpoints.size() > 1) {
@@ -167,6 +188,9 @@ std::vector<MetricSample> fetch_metrics_once(
   }
 
   for (auto& [metric, values] : aggregate_values) {
+    if (!can_aggregate_cluster_metric(metric)) {
+      continue;
+    }
     double aggregate = 0.0;
     if (aggregate_by_average(metric)) {
       for (double value : values) {

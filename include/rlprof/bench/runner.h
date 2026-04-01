@@ -79,6 +79,9 @@ std::vector<BenchResult> benchmark_category(
 
 BenchRunOutput parse_bench_json(const std::string& json_text);
 std::string serialize_bench_output_json(const BenchRunOutput& output);
+std::string render_bench_comparison(
+    const BenchRunOutput& left,
+    const BenchRunOutput& right);
 std::filesystem::path resolve_bench_output_path(
     const std::string& kernel,
     const std::string& output_spec);

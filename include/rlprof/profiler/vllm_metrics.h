@@ -2,8 +2,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <utility>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "rlprof/report.h"
@@ -16,7 +16,7 @@ struct MetricEndpoint {
   std::string server_url;
 };
 
-std::unordered_map<std::string, double> parse_metrics_text(const std::string& text);
+std::vector<std::pair<std::string, double>> parse_metrics_text(const std::string& text);
 
 std::vector<MetricSummary> summarize_samples(const std::vector<MetricSample>& samples);
 

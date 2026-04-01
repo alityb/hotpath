@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,7 @@ struct TrafficRequest {
 struct TrafficResult {
   bool ok;
   long http_status;
-  std::int64_t completion_tokens;
+  std::optional<std::int64_t> completion_tokens;
   std::string body;
   std::string error;
 };

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "rlprof/artifacts.h"
+#include "rlprof/profiler/vllm_metrics.h"
 #include "rlprof/store.h"
 
 #include <sqlite3.h>
@@ -43,26 +44,6 @@ std::string status_label(ValidationStatus status) {
       return "FAIL";
   }
   return "FAIL";
-}
-
-double sum_metric_values(const ProfileData& profile, const std::string& metric) {
-  double total = 0.0;
-  for (const auto& sample : profile.metrics) {
-    if (sample.metric == metric) {
-      total += sample.value;
-    }
-  }
-  return total;
-}
-
-std::vector<double> metric_values(const ProfileData& profile, const std::string& metric) {
-  std::vector<double> values;
-  for (const auto& sample : profile.metrics) {
-    if (sample.metric == metric) {
-      values.push_back(sample.value);
-    }
-  }
-  return values;
 }
 
 bool approx_equal(double a, double b, double tolerance = 1e-9) {
@@ -172,19 +153,25 @@ std::vector<ValidationCheck> validate_profile(const std::filesystem::path& db_pa
     });
   }
 
+  const auto recomputed_summaries = profiler::summarize_samples(profile.metrics);
+  std::map<std::string, MetricSummary> recomputed_by_metric;
+  for (const auto& summary : recomputed_summaries) {
+    recomputed_by_metric[summary.metric] = summary;
+  }
+
   std::size_t metric_mismatches = 0;
   for (const auto& summary : profile.metrics_summary) {
-    const auto values = metric_values(profile, summary.metric);
-    if (values.empty()) {
+    const auto it = recomputed_by_metric.find(summary.metric);
+    if (it == recomputed_by_metric.end()) {
       continue;
     }
-    const double avg = sum_metric_values(profile, summary.metric) /
-                       static_cast<double>(values.size());
-    const double peak = *std::max_element(values.begin(), values.end());
-    const double low = *std::min_element(values.begin(), values.end());
-    if ((summary.avg.has_value() && !approx_equal(*summary.avg, avg)) ||
-        (summary.peak.has_value() && !approx_equal(*summary.peak, peak)) ||
-        (summary.min.has_value() && !approx_equal(*summary.min, low))) {
+    const auto& recomputed = it->second;
+    if ((summary.avg.has_value() &&
+         (!recomputed.avg.has_value() || !approx_equal(*summary.avg, *recomputed.avg))) ||
+        (summary.peak.has_value() &&
+         (!recomputed.peak.has_value() || !approx_equal(*summary.peak, *recomputed.peak))) ||
+        (summary.min.has_value() &&
+         (!recomputed.min.has_value() || !approx_equal(*summary.min, *recomputed.min)))) {
       ++metric_mismatches;
     }
   }

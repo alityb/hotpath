@@ -25,7 +25,10 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
   std::int64_t total_requests = 0;
   std::int64_t total_errors = 0;
   double weighted_completion_mean = 0.0;
-  std::size_t weighted_mean_count = 0;
+  std::int64_t weighted_mean_count = 0;
+  std::optional<double> completion_p50_upper_bound;
+  std::optional<double> completion_p99_upper_bound;
+  std::optional<double> max_median_ratio_upper_bound;
 
   for (const auto& path : paths) {
     const auto profile = load_profile(path);
@@ -64,25 +67,25 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
     total_requests += profile.traffic_stats.total_requests;
     total_errors += profile.traffic_stats.errors;
     if (profile.traffic_stats.completion_length_mean.has_value() &&
-        profile.traffic_stats.total_requests > 0) {
+        profile.traffic_stats.completion_length_samples > 0) {
       weighted_completion_mean +=
           *profile.traffic_stats.completion_length_mean *
-          static_cast<double>(profile.traffic_stats.total_requests);
-      weighted_mean_count += static_cast<std::size_t>(profile.traffic_stats.total_requests);
+          static_cast<double>(profile.traffic_stats.completion_length_samples);
+      weighted_mean_count += profile.traffic_stats.completion_length_samples;
     }
     if (profile.traffic_stats.completion_length_p50.has_value()) {
-      aggregate.traffic_stats.completion_length_p50 =
-          std::max(aggregate.traffic_stats.completion_length_p50.value_or(0.0),
+      completion_p50_upper_bound =
+          std::max(completion_p50_upper_bound.value_or(0.0),
                    *profile.traffic_stats.completion_length_p50);
     }
     if (profile.traffic_stats.completion_length_p99.has_value()) {
-      aggregate.traffic_stats.completion_length_p99 =
-          std::max(aggregate.traffic_stats.completion_length_p99.value_or(0.0),
+      completion_p99_upper_bound =
+          std::max(completion_p99_upper_bound.value_or(0.0),
                    *profile.traffic_stats.completion_length_p99);
     }
     if (profile.traffic_stats.max_median_ratio.has_value()) {
-      aggregate.traffic_stats.max_median_ratio =
-          std::max(aggregate.traffic_stats.max_median_ratio.value_or(0.0),
+      max_median_ratio_upper_bound =
+          std::max(max_median_ratio_upper_bound.value_or(0.0),
                    *profile.traffic_stats.max_median_ratio);
     }
   }
@@ -100,11 +103,30 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
   aggregate.metrics_summary = profiler::summarize_samples(aggregate.metrics);
   aggregate.traffic_stats.total_requests = total_requests;
   aggregate.traffic_stats.errors = total_errors;
+  aggregate.traffic_stats.completion_length_samples = weighted_mean_count;
   if (weighted_mean_count > 0) {
     aggregate.traffic_stats.completion_length_mean =
         weighted_completion_mean / static_cast<double>(weighted_mean_count);
   }
-  aggregate.meta["warning_aggregate_traffic_percentiles"] = "true";
+  aggregate.traffic_stats.completion_length_p50 = std::nullopt;
+  aggregate.traffic_stats.completion_length_p99 = std::nullopt;
+  aggregate.traffic_stats.max_median_ratio = std::nullopt;
+  if (completion_p50_upper_bound.has_value()) {
+    aggregate.meta["aggregate_completion_length_p50_upper_bound"] =
+        std::to_string(*completion_p50_upper_bound);
+  }
+  if (completion_p99_upper_bound.has_value()) {
+    aggregate.meta["aggregate_completion_length_p99_upper_bound"] =
+        std::to_string(*completion_p99_upper_bound);
+  }
+  if (max_median_ratio_upper_bound.has_value()) {
+    aggregate.meta["aggregate_max_median_ratio_upper_bound"] =
+        std::to_string(*max_median_ratio_upper_bound);
+  }
+  if (completion_p50_upper_bound.has_value() || completion_p99_upper_bound.has_value() ||
+      max_median_ratio_upper_bound.has_value()) {
+    aggregate.meta["warning_aggregate_traffic_percentiles"] = "true";
+  }
   return aggregate;
 }
 

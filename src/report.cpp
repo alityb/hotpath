@@ -198,7 +198,7 @@ std::string format_optional_metric(
 
   if (metric == "vllm:gpu_cache_usage_perc" ||
       metric == "vllm:prefix_cache_hit_rate") {
-    return format_fixed(*value, 2);
+    return format_fixed(*value * 100.0, 1) + "%";
   }
   if (metric == "vllm:avg_generation_throughput_toks_per_s") {
     return format_int(static_cast<std::int64_t>(std::llround(*value)));
@@ -268,6 +268,9 @@ std::vector<std::string> warning_messages(const std::map<std::string, std::strin
   append_if("warning_any_clock_throttle", "clock throttling reasons were active");
   append_if("warning_temp_high", "gpu temperature reached high operating range");
   append_if("warning_no_kernel_trace", "no kernel trace was captured for this profile");
+  append_if(
+      "warning_aggregate_traffic_percentiles",
+      "aggregate traffic p50/p99/max-median values are upper bounds from member runs, not exact combined percentiles");
   append_if(
       "warning_gpu_clocks_unlocked",
       "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements.");
@@ -358,21 +361,21 @@ std::string render_report(
     }
     ctx_row("observed pstate(s)", metadata_value(metadata, "measurement_pstates"));
     ctx_row("gpu telemetry samples", metadata_value(metadata, "measurement_samples"));
-    if (sm_avg.has_value()) {
+    if (sm_min.has_value() && sm_avg.has_value() && sm_max.has_value()) {
       ctx_row("sm clock (min/avg/max mhz)",
               format_fixed(*sm_min, 0) + " / " + format_fixed(*sm_avg, 0) + " / " +
                   format_fixed(*sm_max, 0));
     }
-    if (mem_avg.has_value()) {
+    if (mem_min.has_value() && mem_avg.has_value() && mem_max.has_value()) {
       ctx_row("mem clock (min/avg/max mhz)",
               format_fixed(*mem_min, 0) + " / " + format_fixed(*mem_avg, 0) + " / " +
                   format_fixed(*mem_max, 0));
     }
-    if (temp_max.has_value()) {
+    if (temp_min.has_value() && temp_max.has_value()) {
       ctx_row("temperature (min/max c)",
               format_fixed(*temp_min, 0) + " / " + format_fixed(*temp_max, 0));
     }
-    if (power_avg.has_value()) {
+    if (power_avg.has_value() && power_peak.has_value() && power_limit.has_value()) {
       ctx_row("power draw (avg/peak/limit w)",
               format_fixed(*power_avg, 1) + " / " + format_fixed(*power_peak, 1) + " / " +
                   format_fixed(*power_limit, 1));
@@ -587,6 +590,28 @@ std::string render_report(
               traffic_stats.max_median_ratio.has_value()
                   ? format_fixed(*traffic_stats.max_median_ratio, 2) + "x"
                   : "-");
+  if (!traffic_stats.completion_length_p50.has_value()) {
+    const auto upper = metadata_double(metadata, "aggregate_completion_length_p50_upper_bound");
+    if (upper.has_value()) {
+      traffic_row(
+          "completion length p50 ub",
+          format_int(static_cast<std::int64_t>(std::llround(*upper))));
+    }
+  }
+  if (!traffic_stats.completion_length_p99.has_value()) {
+    const auto upper = metadata_double(metadata, "aggregate_completion_length_p99_upper_bound");
+    if (upper.has_value()) {
+      traffic_row(
+          "completion length p99 ub",
+          format_int(static_cast<std::int64_t>(std::llround(*upper))));
+    }
+  }
+  if (!traffic_stats.max_median_ratio.has_value()) {
+    const auto upper = metadata_double(metadata, "aggregate_max_median_ratio_upper_bound");
+    if (upper.has_value()) {
+      traffic_row("max/median ratio ub", format_fixed(*upper, 2) + "x");
+    }
+  }
   traffic_row("errors", format_int(traffic_stats.errors));
 
   return output.str();

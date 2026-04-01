@@ -83,5 +83,13 @@ int main() {
   expect_true(roundtrip.find("\"environment_warnings\"") != std::string::npos,
               "serialized output should include environment warnings");
 
+  rlprof::bench::BenchRunOutput left_only = output;
+  rlprof::bench::BenchRunOutput right_only = output;
+  right_only.results.clear();
+  const std::string comparison = rlprof::bench::render_bench_comparison(left_only, right_only);
+  expect_true(
+      comparison.find("missing") != std::string::npos,
+      "bench comparison should mark missing rows instead of using fake zeros");
+
   return 0;
 }

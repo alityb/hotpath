@@ -37,6 +37,7 @@ int main() {
           {"gpu_name", "NVIDIA A10G, 24GB"},
           {"warning_gpu_clocks_unlocked", "true"},
           {"warning_temp_high", "true"},
+          {"warning_aggregate_traffic_percentiles", "true"},
       },
       .kernels = {
           {
@@ -64,6 +65,7 @@ int main() {
           .completion_length_p99 = 255.0,
           .max_median_ratio = 1.328125,
           .errors = 0,
+          .completion_length_samples = 32,
       },
   };
 
@@ -89,6 +91,9 @@ int main() {
   expect_true(
       traffic_csv.find("total_requests,32") != std::string::npos,
       "traffic csv should contain traffic stats");
+  expect_true(
+      traffic_csv.find("completion_length_samples,32") != std::string::npos,
+      "traffic csv should include completion sample count");
 
   const std::string warnings_csv = read_text(temp_dir / "profile_warnings.csv");
   expect_true(
@@ -97,6 +102,9 @@ int main() {
   expect_true(
       warnings_csv.find("warning_temp_high") != std::string::npos,
       "warnings csv should contain exported warnings");
+  expect_true(
+      warnings_csv.find("warning_aggregate_traffic_percentiles") != std::string::npos,
+      "warnings csv should contain aggregate percentile warning");
 
   const std::string json_text = read_text(temp_dir / "profile.json");
   expect_true(

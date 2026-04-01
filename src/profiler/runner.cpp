@@ -22,6 +22,7 @@
 #include <sqlite3.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include "rlprof/clock_control.h"
 #include "rlprof/doctor.h"
@@ -64,6 +65,23 @@ std::string shell_escape(const std::string& value) {
   return escaped;
 }
 
+std::string join_shell_args(const std::vector<std::string>& args) {
+  std::ostringstream out;
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) {
+      out << " ";
+    }
+    out << shell_escape(args[i]);
+  }
+  return out.str();
+}
+
+std::string background_command(
+    const std::string& command,
+    const std::filesystem::path& log_path) {
+  return command + " > " + shell_escape(log_path.string()) + " 2>&1 & echo $!";
+}
+
 std::string run_command(const std::string& command) {
   std::array<char, 4096> buffer{};
   std::string output;
@@ -85,7 +103,7 @@ pid_t start_background_command(
     const std::string& command,
     const std::filesystem::path& log_path) {
   const std::string wrapped =
-      "bash -lc '" + command + " > " + log_path.string() + " 2>&1 & echo $!'";
+      "bash -lc " + shell_escape(background_command(command, log_path));
   const std::string output = run_command(wrapped);
   return static_cast<pid_t>(std::stol(output));
 }
@@ -145,7 +163,7 @@ bool process_alive(pid_t pid) {
 
 bool server_ready(const std::string& server_url) {
   const std::string command =
-      "curl -fsS " + server_url + "/metrics > /dev/null 2>&1";
+      "curl -fsS " + shell_escape(server_url + "/metrics") + " > /dev/null 2>&1";
   return std::system(command.c_str()) == 0;
 }
 
@@ -280,7 +298,7 @@ void write_nvidia_smi_snapshot(const std::filesystem::path& output_prefix) {
   std::filesystem::path snapshot_path = output_prefix;
   snapshot_path += "_nvidia_smi.xml";
   const std::string command =
-      "nvidia-smi -q -x > " + snapshot_path.string() + " 2>/dev/null";
+      "nvidia-smi -q -x > " + shell_escape(snapshot_path.string()) + " 2>/dev/null";
   const int rc = std::system(command.c_str());
   static_cast<void>(rc);
 }
@@ -683,7 +701,7 @@ MonitoringCapture capture_measured_run(
       gpu_thread.join();
     }
     if (trace_enabled) {
-      run_command("nsys stop --session=" + *session_name);
+      run_command("nsys stop --session=" + shell_escape(*session_name));
     }
     return MonitoringCapture{
         .metrics = std::move(metrics),
@@ -698,7 +716,7 @@ MonitoringCapture capture_measured_run(
       gpu_thread.join();
     }
     if (trace_enabled) {
-      run_command("nsys stop --session=" + *session_name);
+      run_command("nsys stop --session=" + shell_escape(*session_name));
     }
     throw;
   }
@@ -709,32 +727,69 @@ std::string profile_server_command(
     const std::string& vllm_path,
     const std::string& session_name,
     const std::filesystem::path& output_prefix) {
-  return "VLLM_WORKER_MULTIPROC_METHOD=spawn nsys profile --trace=cuda,nvtx,osrt "
-         "--sample=none --cpuctxsw=none --export=sqlite "
-         "--force-overwrite=true --session-new " +
-         session_name + " --start-later=true -o " + output_prefix.string() +
-         " " + vllm_path + " serve " + config.model +
-         " --port " + std::to_string(config.port) +
-         " --tensor-parallel-size " + std::to_string(config.tp) +
-         " --max-model-len " + std::to_string(inferred_max_model_len(config)) +
-         (config.trust_remote_code ? " --trust-remote-code" : "");
+  std::vector<std::string> command = {
+      "env",
+      "VLLM_WORKER_MULTIPROC_METHOD=spawn",
+      "nsys",
+      "profile",
+      "--trace=cuda,nvtx,osrt",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--export=sqlite",
+      "--force-overwrite=true",
+      "--session-new",
+      session_name,
+      "--start-later=true",
+      "-o",
+      output_prefix.string(),
+      vllm_path,
+      "serve",
+      config.model,
+      "--port",
+      std::to_string(config.port),
+      "--tensor-parallel-size",
+      std::to_string(config.tp),
+      "--max-model-len",
+      std::to_string(inferred_max_model_len(config)),
+  };
+  if (config.trust_remote_code) {
+    command.push_back("--trust-remote-code");
+  }
+  return join_shell_args(command);
 }
 
 std::string launch_server_command(
     const ProfileConfig& config,
     const std::string& vllm_path,
     const std::string& session_name) {
-  return "VLLM_WORKER_MULTIPROC_METHOD=spawn nsys launch --trace=cuda,nvtx,osrt "
-         "--session-new " +
-         session_name + " --wait=all " + vllm_path + " serve " + config.model +
-         " --port " + std::to_string(config.port) +
-         " --tensor-parallel-size " + std::to_string(config.tp) +
-         " --max-model-len " + std::to_string(inferred_max_model_len(config)) +
-         (config.trust_remote_code ? " --trust-remote-code" : "");
+  std::vector<std::string> command = {
+      "env",
+      "VLLM_WORKER_MULTIPROC_METHOD=spawn",
+      "nsys",
+      "launch",
+      "--trace=cuda,nvtx,osrt",
+      "--session-new",
+      session_name,
+      "--wait=all",
+      vllm_path,
+      "serve",
+      config.model,
+      "--port",
+      std::to_string(config.port),
+      "--tensor-parallel-size",
+      std::to_string(config.tp),
+      "--max-model-len",
+      std::to_string(inferred_max_model_len(config)),
+  };
+  if (config.trust_remote_code) {
+    command.push_back("--trust-remote-code");
+  }
+  return join_shell_args(command);
 }
 
 ProfileRunResult finalize_profile_run(
     const ProfileConfig& config,
+    std::int64_t actual_max_model_len,
     const RuntimeEnvironmentInfo& environment,
     const rlprof::ClockPolicyInfo& clock_policy,
     const std::string& server_url,
@@ -794,7 +849,7 @@ ProfileRunResult finalize_profile_run(
          return joined.str();
        }()},
       {"cluster_local_trace_endpoint", server_url},
-      {"max_model_len", std::to_string(inferred_max_model_len(config))},
+      {"max_model_len", std::to_string(actual_max_model_len)},
       {"trust_remote_code", config.trust_remote_code ? "true" : "false"},
       {"discard_first_run", config.discard_first_run ? "true" : "false"},
       {"measurement_untraced_warmup", config.discard_first_run ? "true" : "false"},
@@ -862,11 +917,23 @@ std::string attach_profile_command(
     const std::filesystem::path& output_prefix,
     const std::string& session_name,
     std::int64_t attach_pid) {
-  return shell_escape(nsys_path) +
-         " profile --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none --export=sqlite "
-         "--force-overwrite=true --session-new " +
-         session_name + " --start-later=true --wait=all --pid " +
-         std::to_string(attach_pid) + " -o " + shell_escape(output_prefix.string());
+  return join_shell_args({
+      nsys_path,
+      "profile",
+      "--trace=cuda,nvtx,osrt",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--export=sqlite",
+      "--force-overwrite=true",
+      "--session-new",
+      session_name,
+      "--start-later=true",
+      "--wait=all",
+      "--pid",
+      std::to_string(attach_pid),
+      "-o",
+      output_prefix.string(),
+  });
 }
 
 std::string resolved_attach_mode_kind(
@@ -953,6 +1020,9 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
       attach_clone_plan.has_value() && attach_clone_plan->mode == "replace_restore";
   ProfileConfig effective_config =
       managed_server_effective_config(config, managed_server);
+  const std::int64_t actual_max_model_len =
+      managed_server.has_value() ? managed_server->max_model_len
+                                 : inferred_max_model_len(effective_config);
   if (attach_clone_plan.has_value()) {
     effective_config.model = attach_clone_plan->process.model;
     effective_config.port = attach_clone_plan->traced_port;
@@ -1076,6 +1146,7 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
         attach_mode, attach_by_process, attach_clone_mode, attach_replace_mode);
     auto result = finalize_profile_run(
         effective_config,
+        actual_max_model_len,
         environment,
         clock_policy,
         server_url,
@@ -1098,13 +1169,17 @@ ProfileRunResult run_profile(const ProfileConfig& config, ProgressCallback progr
   } catch (...) {
     if ((!attach_mode || attach_clone_plan.has_value()) && !managed_server_mode) {
       const int stop_rc =
-          std::system(("nsys stop --session=" + session_name + " > /dev/null 2>&1").c_str());
+          std::system(
+              ("nsys stop --session=" + shell_escape(session_name) + " > /dev/null 2>&1")
+                  .c_str());
       static_cast<void>(stop_rc);
       stop_process(server_pid);
     }
     if (attach_by_process && nsys_supports_pid_attach && attach_profiler_pid > 0) {
       const int stop_rc =
-          std::system(("nsys stop --session=" + session_name + " > /dev/null 2>&1").c_str());
+          std::system(
+              ("nsys stop --session=" + shell_escape(session_name) + " > /dev/null 2>&1")
+                  .c_str());
       static_cast<void>(stop_rc);
       stop_process(attach_profiler_pid);
     }
@@ -1175,6 +1250,9 @@ std::vector<ProfileRunResult> run_soak_profile(
       attach_clone_plan.has_value() && attach_clone_plan->mode == "replace_restore";
   ProfileConfig effective_config =
       managed_server_effective_config(config, managed_server);
+  const std::int64_t actual_max_model_len =
+      managed_server.has_value() ? managed_server->max_model_len
+                                 : inferred_max_model_len(effective_config);
   if (attach_clone_plan.has_value()) {
     effective_config.model = attach_clone_plan->process.model;
     effective_config.port = attach_clone_plan->traced_port;
@@ -1270,6 +1348,7 @@ std::vector<ProfileRunResult> run_soak_profile(
           "Saving profile iteration " + std::to_string(iteration) + "...");
       results.push_back(finalize_profile_run(
           effective_config,
+          actual_max_model_len,
           environment,
           clock_policy,
           server_url,
@@ -1312,13 +1391,17 @@ std::vector<ProfileRunResult> run_soak_profile(
   } catch (...) {
     if ((!attach_mode || attach_clone_plan.has_value()) && !managed_server_mode) {
       const int stop_rc =
-          std::system(("nsys stop --session=" + session_name + " > /dev/null 2>&1").c_str());
+          std::system(
+              ("nsys stop --session=" + shell_escape(session_name) + " > /dev/null 2>&1")
+                  .c_str());
       static_cast<void>(stop_rc);
       stop_process(server_pid);
     }
     if (attach_by_process && nsys_supports_pid_attach && attach_profiler_pid > 0) {
       const int stop_rc =
-          std::system(("nsys stop --session=" + session_name + " > /dev/null 2>&1").c_str());
+          std::system(
+              ("nsys stop --session=" + shell_escape(session_name) + " > /dev/null 2>&1")
+                  .c_str());
       static_cast<void>(stop_rc);
       stop_process(attach_profiler_pid);
     }
