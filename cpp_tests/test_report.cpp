@@ -76,7 +76,7 @@ int main() {
           {"warning_aggregate_traffic_percentiles", "true"},
           {"aggregate_completion_length_p50_upper_bound", "1204"},
           {"aggregate_completion_length_p99_upper_bound", "3891"},
-          {"aggregate_max_median_ratio_upper_bound", "3.23"},
+          {"aggregate_max_median_ratio_observed_max", "3.23"},
           {"warning_gpu_clocks_unlocked", "true"},
           {"warning_temp_high", "true"},
       },
@@ -142,6 +142,7 @@ int main() {
           .completion_length_p99 = std::nullopt,
           .max_median_ratio = std::nullopt,
           .errors = 0,
+          .completion_length_samples = 768,
       });
 
   // Header uses Unicode box-drawing separator │
@@ -151,7 +152,7 @@ int main() {
   expect_contains(report, "v0.1.0");
   expect_contains(report, "conservative substring matching");
   expect_contains(report, "WARNINGS");
-  expect_contains(report, "aggregate traffic p50/p99/max-median values are upper bounds");
+  expect_contains(report, "aggregate traffic p50/p99 are upper bounds");
   expect_contains(report, "GPU clocks are not locked. Run `rlprof lock-clocks`");
   expect_contains(report, "gpu temperature reached high operating range");
   expect_contains(report, "MEASUREMENT CONTEXT");
@@ -173,10 +174,12 @@ int main() {
   expect_contains(report, "892.1");
   expect_contains(report, "TRAFFIC SHAPE");
   expect_contains(report, "1,024");
+  expect_contains(report, "completion length samples");
+  expect_contains(report, "768");
   expect_contains(report, "3.23x");
   expect_contains(report, "completion length p50 ub");
   expect_contains(report, "completion length p99 ub");
-  expect_contains(report, "max/median ratio ub");
+  expect_contains(report, "max/median ratio max");
 
   return 0;
 }

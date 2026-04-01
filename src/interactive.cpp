@@ -25,6 +25,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "rlprof/bench/runner.h"
 #include "rlprof/clock_control.h"
 
 namespace rlprof::interactive {
@@ -412,6 +413,41 @@ std::vector<std::string> list_recent_profiles(int max_count) {
   for (const auto& entry : fs::directory_iterator(root)) {
     if (entry.path().extension() == ".db") {
       entries.push_back({entry.last_write_time(), entry.path().string()});
+    }
+  }
+
+  std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+    return left.first > right.first;
+  });
+
+  std::vector<std::string> paths;
+  for (std::size_t i = 0; i < entries.size() && i < static_cast<std::size_t>(max_count); ++i) {
+    paths.push_back(entries[i].second);
+  }
+  return paths;
+}
+
+std::vector<std::string> list_recent_bench_results(int max_count) {
+  namespace fs = std::filesystem;
+  std::vector<std::pair<fs::file_time_type, std::string>> entries;
+  const fs::path root = ".rlprof";
+  if (!fs::exists(root)) {
+    return {};
+  }
+
+  for (const auto& entry : fs::directory_iterator(root)) {
+    if (entry.path().extension() == ".json") {
+      try {
+        std::ifstream stream(entry.path());
+        std::stringstream buffer;
+        buffer << stream.rdbuf();
+        const auto parsed =
+            rlprof::bench::parse_bench_json(buffer.str());
+        if (!parsed.results.empty()) {
+          entries.push_back({entry.last_write_time(), entry.path().string()});
+        }
+      } catch (const std::exception&) {
+      }
     }
   }
 

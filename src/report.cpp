@@ -270,7 +270,7 @@ std::vector<std::string> warning_messages(const std::map<std::string, std::strin
   append_if("warning_no_kernel_trace", "no kernel trace was captured for this profile");
   append_if(
       "warning_aggregate_traffic_percentiles",
-      "aggregate traffic p50/p99/max-median values are upper bounds from member runs, not exact combined percentiles");
+      "aggregate traffic p50/p99 are upper bounds from member runs; max/median is the max observed per-run ratio");
   append_if(
       "warning_gpu_clocks_unlocked",
       "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements.");
@@ -578,6 +578,11 @@ std::string render_report(
               traffic_stats.completion_length_mean.has_value()
                   ? format_int(static_cast<std::int64_t>(std::llround(*traffic_stats.completion_length_mean)))
                   : "-");
+  traffic_row(
+      "completion length samples",
+      traffic_stats.completion_length_samples > 0
+          ? format_int(traffic_stats.completion_length_samples)
+          : "-");
   traffic_row("completion length p50",
               traffic_stats.completion_length_p50.has_value()
                   ? format_int(static_cast<std::int64_t>(std::llround(*traffic_stats.completion_length_p50)))
@@ -607,9 +612,9 @@ std::string render_report(
     }
   }
   if (!traffic_stats.max_median_ratio.has_value()) {
-    const auto upper = metadata_double(metadata, "aggregate_max_median_ratio_upper_bound");
-    if (upper.has_value()) {
-      traffic_row("max/median ratio ub", format_fixed(*upper, 2) + "x");
+    const auto observed = metadata_double(metadata, "aggregate_max_median_ratio_observed_max");
+    if (observed.has_value()) {
+      traffic_row("max/median ratio max", format_fixed(*observed, 2) + "x");
     }
   }
   traffic_row("errors", format_int(traffic_stats.errors));

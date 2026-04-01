@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "rlprof/bench/runner.h"
 #include "interactive.h"
 
 namespace {
@@ -103,15 +104,50 @@ int main() {
   std::ofstream(temp_root / ".rlprof" / "old.db").put('\n');
   std::ofstream(temp_root / ".rlprof" / "mid.db").put('\n');
   std::ofstream(temp_root / ".rlprof" / "new.db").put('\n');
+  {
+    rlprof::bench::BenchRunOutput output;
+    output.results.push_back(rlprof::bench::BenchResult{
+        .kernel = "silu_and_mul",
+        .implementation = "torch-eager",
+        .shape = rlprof::bench::Shape{64, 4096},
+        .dtype = "bf16",
+        .avg_ms = 0.1,
+        .min_ms = 0.09,
+        .p50_ms = 0.1,
+        .p99_ms = 0.12,
+        .bandwidth_gb_s = 50.0,
+    });
+    std::ofstream(temp_root / ".rlprof" / "old.json")
+        << rlprof::bench::serialize_bench_output_json(output);
+    std::ofstream(temp_root / ".rlprof" / "new.json")
+        << rlprof::bench::serialize_bench_output_json(output);
+  }
+  std::ofstream(temp_root / ".rlprof" / "profile_export.json") << "{\"meta\":{}}\n";
 
   fs::last_write_time(temp_root / ".rlprof" / "old.db", fs::file_time_type::clock::now() - std::chrono::hours(3));
   fs::last_write_time(temp_root / ".rlprof" / "mid.db", fs::file_time_type::clock::now() - std::chrono::hours(2));
   fs::last_write_time(temp_root / ".rlprof" / "new.db", fs::file_time_type::clock::now() - std::chrono::hours(1));
+  fs::last_write_time(temp_root / ".rlprof" / "old.json", fs::file_time_type::clock::now() - std::chrono::hours(4));
+  fs::last_write_time(temp_root / ".rlprof" / "new.json", fs::file_time_type::clock::now() - std::chrono::minutes(30));
+  fs::last_write_time(temp_root / ".rlprof" / "profile_export.json", fs::file_time_type::clock::now() - std::chrono::minutes(10));
 
   const auto recent = rlprof::interactive::list_recent_profiles(2);
   expect_true(recent.size() == 2, "expected two recent profiles");
   expect_true(recent[0].find("new.db") != std::string::npos, "expected newest profile first");
   expect_true(recent[1].find("mid.db") != std::string::npos, "expected second newest profile second");
+
+  const auto recent_bench = rlprof::interactive::list_recent_bench_results(2);
+  expect_true(recent_bench.size() == 2, "expected two recent bench results");
+  expect_true(
+      recent_bench[0].find("new.json") != std::string::npos,
+      "expected newest bench result first");
+  expect_true(
+      recent_bench[1].find("old.json") != std::string::npos,
+      "expected older bench result second");
+  expect_true(
+      recent_bench[0].find("profile_export.json") == std::string::npos &&
+          recent_bench[1].find("profile_export.json") == std::string::npos,
+      "expected non-bench json to be excluded");
 
   const rlprof::interactive::ProfileConfig saved_profile = {
       .model = "Qwen/Qwen3-8B",

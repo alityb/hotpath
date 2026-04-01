@@ -114,6 +114,22 @@ ignored_metric 123
   expect_true(saw_cluster_running, "expected summed cluster running-request metric");
   expect_true(!saw_cluster_p99, "cluster percentile metrics should not be synthesized");
 
+  const auto fetched_summaries = rlprof::profiler::summarize_samples(fetched);
+  bool saw_p99_summary = false;
+  for (const auto& summary : fetched_summaries) {
+    if (summary.metric == "vllm:time_to_first_token_seconds_p99") {
+      saw_p99_summary = true;
+      expect_true(summary.avg.has_value() && *summary.avg == 1.0,
+                  "expected node percentile summaries to remain visible when no cluster percentile is synthesized");
+      expect_true(summary.peak.has_value() && *summary.peak == 1.5,
+                  "expected peak percentile summary from node samples");
+      expect_true(summary.min.has_value() && *summary.min == 0.5,
+                  "expected min percentile summary from node samples");
+    }
+  }
+  expect_true(saw_p99_summary,
+              "expected percentile summary to remain present for clustered metric fetches");
+
   fs::remove_all(temp_root);
 
   return 0;

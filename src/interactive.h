@@ -60,6 +60,7 @@ std::string detect_gpu_name();
 bool are_clocks_locked();
 std::string clock_status_label();
 std::vector<std::string> list_recent_profiles(int max_count = 10);
+std::vector<std::string> list_recent_bench_results(int max_count = 10);
 ProfileConfig load_profile_defaults();
 BenchConfig load_bench_defaults();
 void save_profile_defaults(const ProfileConfig& config);

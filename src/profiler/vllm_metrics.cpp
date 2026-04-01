@@ -113,23 +113,27 @@ std::vector<std::pair<std::string, double>> parse_metrics_text(const std::string
 }
 
 std::vector<MetricSummary> summarize_samples(const std::vector<MetricSample>& samples) {
-  std::unordered_map<std::string, std::vector<double>> grouped;
-  bool saw_cluster_samples = false;
+  struct GroupedValues {
+    std::vector<double> cluster;
+    std::vector<double> source;
+  };
+  std::unordered_map<std::string, GroupedValues> grouped;
   for (const MetricSample& sample : samples) {
+    auto& bucket = grouped[sample.metric];
     if (sample.source == "cluster") {
-      saw_cluster_samples = true;
-      break;
+      bucket.cluster.push_back(sample.value);
+    } else {
+      bucket.source.push_back(sample.value);
     }
-  }
-  for (const MetricSample& sample : samples) {
-    if (saw_cluster_samples && sample.source != "cluster") {
-      continue;
-    }
-    grouped[sample.metric].push_back(sample.value);
   }
 
   std::vector<MetricSummary> summaries;
-  for (auto& [metric, values] : grouped) {
+  for (auto& [metric, values_by_source] : grouped) {
+    const auto& values =
+        values_by_source.cluster.empty() ? values_by_source.source : values_by_source.cluster;
+    if (values.empty()) {
+      continue;
+    }
     const auto [min_it, max_it] = std::minmax_element(values.begin(), values.end());
     double sum = 0.0;
     for (double value : values) {

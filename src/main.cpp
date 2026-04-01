@@ -1917,6 +1917,28 @@ std::optional<std::string> choose_recent_profile(
   return profiles[static_cast<std::size_t>(*choice)];
 }
 
+std::optional<std::string> choose_recent_bench_result(
+    const std::string& header,
+    bool include_timestamp) {
+  rlprof::interactive::print_header(header);
+  const auto results = rlprof::interactive::list_recent_bench_results(10);
+  if (results.empty()) {
+    rlprof::interactive::print_warning("No bench results found in .rlprof/");
+    return std::nullopt;
+  }
+  std::vector<std::string> options;
+  options.reserve(results.size());
+  for (const auto& path : results) {
+    options.push_back(format_recent_profile_option(path, include_timestamp));
+  }
+  const auto choice =
+      rlprof::interactive::prompt_choice("Recent bench results", options, 0);
+  if (!choice.has_value()) {
+    return std::nullopt;
+  }
+  return results[static_cast<std::size_t>(*choice)];
+}
+
 int execute_profile_config(
     const rlprof::interactive::ProfileConfig& config,
     bool confirm_start,
@@ -2229,6 +2251,19 @@ int interactive_export_flow(const std::string& default_format = "csv") {
       {"export", *path, "--format", formats[static_cast<std::size_t>(*format_choice)]});
 }
 
+int interactive_bench_compare_flow() {
+  rlprof::interactive::print_header("rlprof · compare archived bench runs");
+  const auto left = choose_recent_bench_result("Left bench result", true);
+  if (!left.has_value()) {
+    return 0;
+  }
+  const auto right = choose_recent_bench_result("Right bench result", true);
+  if (!right.has_value()) {
+    return 0;
+  }
+  return handle_bench_compare({"bench-compare", *left, *right});
+}
+
 std::string completion_script(const std::string& shell) {
   if (shell == "bash") {
     return R"(# bash completion for rlprof
@@ -2532,8 +2567,7 @@ int main(int argc, char** argv) {
         return interactive_export_flow();
       }
       if (*choice == 6) {
-        rlprof::interactive::print_header("rlprof · compare archived bench runs");
-        return handle_bench_compare({"bench-compare"});
+        return interactive_bench_compare_flow();
       }
       if (*choice == 7) {
         return handle_trace({"trace"});

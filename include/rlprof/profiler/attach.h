@@ -35,6 +35,8 @@ std::optional<VllmServeProcessInfo> parse_vllm_serve_argv(
 std::optional<VllmServeProcessInfo> inspect_vllm_serve_process(
     std::int64_t pid);
 
+bool attach_server_is_local(const std::string& attach_server);
+
 std::optional<AttachClonePlan> build_attach_clone_plan(
     std::int64_t pid,
     const std::string& attach_server,

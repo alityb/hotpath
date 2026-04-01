@@ -116,6 +116,9 @@ int main() {
   expect_true(
       json_text.find("\"traffic_stats\"") != std::string::npos,
       "json export should contain traffic stats");
+  expect_true(
+      json_text.find("\"completion_length_samples\": 32") != std::string::npos,
+      "json export should include completion sample count");
 
   return 0;
 }

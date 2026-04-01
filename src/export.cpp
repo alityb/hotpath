@@ -29,7 +29,7 @@ std::vector<std::pair<std::string, std::string>> export_warnings(
   add_warning("warning_temp_high", "gpu temperature reached high operating range");
   add_warning(
       "warning_aggregate_traffic_percentiles",
-      "aggregate traffic p50/p99/max-median values are upper bounds from member runs, not exact combined percentiles");
+      "aggregate traffic p50/p99 values are upper bounds from member runs; max/median is the max observed per-run ratio, not an exact combined percentile");
   add_warning(
       "warning_gpu_clocks_unlocked",
       "GPU clocks are not locked. Run `rlprof lock-clocks` for reproducible measurements. See: docs.nvidia.com/deploy/nvidia-smi/index.html");

@@ -403,6 +403,19 @@ bool managed_server_ready(const ManagedServerState& state) {
   return state.pid <= 0 || process_alive(state.pid);
 }
 
+std::int64_t stop_target_pid(const ManagedServerState& state) {
+  const std::int64_t listener_pid = listening_pid_for_port(state.port);
+  if (listener_pid > 0) {
+    if (state.pid <= 0 || !process_alive(state.pid) || listener_pid == state.pid) {
+      return listener_pid;
+    }
+  }
+  if (state.pid > 0 && process_alive(state.pid)) {
+    return state.pid;
+  }
+  return listener_pid;
+}
+
 void stop_managed_server(const ManagedServerState& state) {
   release_lock(managed_server_lock_path(state.name));
   if (state.session_name.size() > 0) {
@@ -413,8 +426,7 @@ void stop_managed_server(const ManagedServerState& state) {
         std::system(("nsys stop --session=" + state.session_name + " >/dev/null 2>&1").c_str());
     static_cast<void>(stop_session_rc);
   }
-  const std::int64_t live_pid =
-      state.pid > 0 ? state.pid : listening_pid_for_port(state.port);
+  const std::int64_t live_pid = stop_target_pid(state);
   if (live_pid > 0) {
     const int term_rc = std::system(("kill " + std::to_string(live_pid) + " >/dev/null 2>&1").c_str());
     static_cast<void>(term_rc);

@@ -2,12 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <unordered_set>
 #include <vector>
 
 namespace rlprof::profiler {
@@ -88,19 +95,102 @@ std::vector<std::string> read_proc_cmdline(std::int64_t pid) {
 std::string host_from_server_url(const std::string& url) {
   const auto scheme_pos = url.find("://");
   const std::size_t host_start = scheme_pos == std::string::npos ? 0 : scheme_pos + 3;
-  const auto host_end = url.find(':', host_start);
-  if (host_end == std::string::npos) {
-    return url.substr(host_start);
+  if (host_start >= url.size()) {
+    return "";
+  }
+  const auto path_start = url.find('/', host_start);
+  const auto host_port_end = path_start == std::string::npos ? url.size() : path_start;
+  if (url[host_start] == '[') {
+    const auto bracket_end = url.find(']', host_start + 1);
+    if (bracket_end == std::string::npos || bracket_end >= host_port_end) {
+      return "";
+    }
+    return url.substr(host_start + 1, bracket_end - host_start - 1);
+  }
+  const auto host_end = url.rfind(':', host_port_end);
+  if (host_end == std::string::npos || host_end < host_start) {
+    return url.substr(host_start, host_port_end - host_start);
   }
   return url.substr(host_start, host_end - host_start);
 }
 
 std::int64_t port_from_server_url(const std::string& url) {
+  const auto scheme_pos = url.find("://");
+  const std::size_t host_start = scheme_pos == std::string::npos ? 0 : scheme_pos + 3;
+  const auto path_start = url.find('/', host_start);
+  const auto host_port_end = path_start == std::string::npos ? url.size() : path_start;
   const auto last_colon = url.rfind(':');
-  if (last_colon == std::string::npos) {
+  if (last_colon == std::string::npos || last_colon >= host_port_end) {
     return 0;
   }
-  return std::stoll(url.substr(last_colon + 1));
+  if (host_start < url.size() && url[host_start] == '[') {
+    const auto bracket_end = url.find(']', host_start + 1);
+    if (bracket_end == std::string::npos || last_colon <= bracket_end) {
+      return 0;
+    }
+  }
+  if (last_colon < host_start) {
+    return 0;
+  }
+  return std::stoll(url.substr(last_colon + 1, host_port_end - last_colon - 1));
+}
+
+std::unordered_set<std::string> local_interface_addresses() {
+  std::unordered_set<std::string> values = {"127.0.0.1", "::1"};
+  ifaddrs* interfaces = nullptr;
+  if (getifaddrs(&interfaces) != 0) {
+    return values;
+  }
+  for (ifaddrs* current = interfaces; current != nullptr; current = current->ifa_next) {
+    if (current->ifa_addr == nullptr) {
+      continue;
+    }
+    const int family = current->ifa_addr->sa_family;
+    if (family != AF_INET && family != AF_INET6) {
+      continue;
+    }
+    char host[NI_MAXHOST] = {};
+    const socklen_t addr_len = family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+    if (getnameinfo(
+            current->ifa_addr,
+            addr_len,
+            host,
+            sizeof(host),
+            nullptr,
+            0,
+            NI_NUMERICHOST) == 0) {
+      values.insert(host);
+    }
+  }
+  freeifaddrs(interfaces);
+  return values;
+}
+
+std::unordered_set<std::string> resolve_host_addresses(const std::string& host) {
+  std::unordered_set<std::string> values;
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_ADDRCONFIG;
+  addrinfo* result = nullptr;
+  if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0) {
+    return values;
+  }
+  for (addrinfo* current = result; current != nullptr; current = current->ai_next) {
+    char numeric[NI_MAXHOST] = {};
+    if (getnameinfo(
+            current->ai_addr,
+            current->ai_addrlen,
+            numeric,
+            sizeof(numeric),
+            nullptr,
+            0,
+            NI_NUMERICHOST) == 0) {
+      values.insert(numeric);
+    }
+  }
+  freeaddrinfo(result);
+  return values;
 }
 
 bool port_in_use(std::int64_t port) {
@@ -171,6 +261,34 @@ std::vector<std::string> cloned_argv(
 
 }  // namespace
 
+bool attach_server_is_local(const std::string& attach_server) {
+  const std::string host = host_from_server_url(attach_server);
+  if (host.empty()) {
+    return false;
+  }
+  if (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+    return true;
+  }
+  char hostname[256] = {};
+  if (gethostname(hostname, sizeof(hostname)) == 0) {
+    hostname[sizeof(hostname) - 1] = '\0';
+    if (host == hostname) {
+      return true;
+    }
+  }
+  const auto resolved = resolve_host_addresses(host);
+  if (resolved.empty()) {
+    return false;
+  }
+  const auto local = local_interface_addresses();
+  for (const auto& value : resolved) {
+    if (local.contains(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<VllmServeProcessInfo> parse_vllm_serve_argv(
     const std::vector<std::string>& argv) {
   if (argv.empty()) {
@@ -218,8 +336,7 @@ std::optional<AttachClonePlan> build_attach_clone_plan(
   if (!process.has_value()) {
     return std::nullopt;
   }
-  const std::string host = host_from_server_url(attach_server);
-  if (!(host == "127.0.0.1" || host == "localhost")) {
+  if (!attach_server_is_local(attach_server)) {
     return std::nullopt;
   }
   const std::int64_t attach_port = port_from_server_url(attach_server);

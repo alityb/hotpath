@@ -90,8 +90,8 @@ int main() {
       aggregate.meta.at("aggregate_completion_length_p99_upper_bound") == "24.000000",
       "expected p99 upper bound metadata");
   expect_true(
-      aggregate.meta.at("aggregate_max_median_ratio_upper_bound") == "1.500000",
-      "expected max/median upper bound metadata");
+      aggregate.meta.at("aggregate_max_median_ratio_observed_max") == "1.500000",
+      "expected max per-run max/median ratio metadata");
 
   fs::remove_all(temp_root);
   return 0;

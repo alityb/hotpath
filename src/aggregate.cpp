@@ -28,7 +28,7 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
   std::int64_t weighted_mean_count = 0;
   std::optional<double> completion_p50_upper_bound;
   std::optional<double> completion_p99_upper_bound;
-  std::optional<double> max_median_ratio_upper_bound;
+  std::optional<double> max_median_ratio_observed_max;
 
   for (const auto& path : paths) {
     const auto profile = load_profile(path);
@@ -84,8 +84,8 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
                    *profile.traffic_stats.completion_length_p99);
     }
     if (profile.traffic_stats.max_median_ratio.has_value()) {
-      max_median_ratio_upper_bound =
-          std::max(max_median_ratio_upper_bound.value_or(0.0),
+      max_median_ratio_observed_max =
+          std::max(max_median_ratio_observed_max.value_or(0.0),
                    *profile.traffic_stats.max_median_ratio);
     }
   }
@@ -119,12 +119,12 @@ ProfileData aggregate_profiles(const std::vector<std::filesystem::path>& paths) 
     aggregate.meta["aggregate_completion_length_p99_upper_bound"] =
         std::to_string(*completion_p99_upper_bound);
   }
-  if (max_median_ratio_upper_bound.has_value()) {
-    aggregate.meta["aggregate_max_median_ratio_upper_bound"] =
-        std::to_string(*max_median_ratio_upper_bound);
+  if (max_median_ratio_observed_max.has_value()) {
+    aggregate.meta["aggregate_max_median_ratio_observed_max"] =
+        std::to_string(*max_median_ratio_observed_max);
   }
   if (completion_p50_upper_bound.has_value() || completion_p99_upper_bound.has_value() ||
-      max_median_ratio_upper_bound.has_value()) {
+      max_median_ratio_observed_max.has_value()) {
     aggregate.meta["warning_aggregate_traffic_percentiles"] = "true";
   }
   return aggregate;

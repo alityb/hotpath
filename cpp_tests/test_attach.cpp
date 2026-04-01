@@ -49,5 +49,15 @@ int main() {
     expect_true(!parsed.has_value(), "expected non-vllm argv to be rejected");
   }
 
+  expect_true(
+      rlprof::profiler::attach_server_is_local("http://127.0.0.1:8050"),
+      "expected loopback attach server to be local");
+  expect_true(
+      rlprof::profiler::attach_server_is_local("http://localhost:8050"),
+      "expected localhost attach server to be local");
+  expect_true(
+      !rlprof::profiler::attach_server_is_local("http://example.invalid:8050"),
+      "expected unrelated host to be non-local");
+
   return 0;
 }
