@@ -15,6 +15,8 @@ struct ManagedServerConfig {
   std::int64_t tp = 1;
   std::int64_t max_model_len = 2048;
   bool trust_remote_code = false;
+  bool wrap_with_nsys = true;
+  bool debug_logging = false;
   std::int64_t startup_timeout_s = 300;
 };
 

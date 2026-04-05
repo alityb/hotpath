@@ -73,6 +73,7 @@ struct BenchCommandOptions {
   std::int64_t repeats = 5;
   double batch_ms_target = 10.0;
   std::string cuda_graph_replay = "off";
+  bool flush_l2 = false;
   std::string output = "auto";
   hotpath::RemoteTarget target;
   bool assume_yes = false;
@@ -436,11 +437,12 @@ print_row() {
 }
 
 tool_python() {
-  if [ -n "${RLPROF_PYTHON_EXECUTABLE:-}" ]; then
-    if [ -x "$RLPROF_PYTHON_EXECUTABLE" ]; then
-      print_row python PASS "$RLPROF_PYTHON_EXECUTABLE ($("$RLPROF_PYTHON_EXECUTABLE" --version 2>&1 | head -n 1))"
+  _py_exec="${HOTPATH_PYTHON_EXECUTABLE:-${RLPROF_PYTHON_EXECUTABLE:-}}"
+  if [ -n "$_py_exec" ]; then
+    if [ -x "$_py_exec" ]; then
+      print_row python PASS "$_py_exec ($("$_py_exec" --version 2>&1 | head -n 1))"
     else
-      print_row python FAIL "missing configured executable: $RLPROF_PYTHON_EXECUTABLE"
+      print_row python FAIL "missing configured executable: $_py_exec"
       FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
     return
@@ -460,11 +462,12 @@ tool_python() {
 }
 
 tool_vllm() {
-  if [ -n "${RLPROF_VLLM_EXECUTABLE:-}" ]; then
-    if [ -x "$RLPROF_VLLM_EXECUTABLE" ]; then
-      print_row vllm PASS "$RLPROF_VLLM_EXECUTABLE ($("$RLPROF_VLLM_EXECUTABLE" --version 2>&1 | head -n 1))"
+  _vllm_exec="${HOTPATH_VLLM_EXECUTABLE:-${RLPROF_VLLM_EXECUTABLE:-}}"
+  if [ -n "$_vllm_exec" ]; then
+    if [ -x "$_vllm_exec" ]; then
+      print_row vllm PASS "$_vllm_exec ($("$_vllm_exec" --version 2>&1 | head -n 1))"
     else
-      print_row vllm FAIL "missing configured executable: $RLPROF_VLLM_EXECUTABLE"
+      print_row vllm FAIL "missing configured executable: $_vllm_exec"
       FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
     return
@@ -1633,13 +1636,15 @@ std::string bench_helper_command(
     std::int64_t n_iter,
     std::int64_t repeats,
     double batch_ms_target,
-    const std::string& cuda_graph_replay) {
-  const char* configured_python = std::getenv("RLPROF_PYTHON_EXECUTABLE");
+    const std::string& cuda_graph_replay,
+    bool flush_l2 = false) {
+  const char* _py1 = std::getenv("HOTPATH_PYTHON_EXECUTABLE");
+  if (!_py1 || std::string(_py1).empty()) _py1 = std::getenv("RLPROF_PYTHON_EXECUTABLE");
   const std::string python =
-      configured_python != nullptr && std::string(configured_python).size() > 0
-          ? std::string(configured_python)
+      _py1 != nullptr && std::string(_py1).size() > 0
+          ? std::string(_py1)
           : (std::filesystem::exists(".venv/bin/python") ? ".venv/bin/python" : "python3");
-  return shell_escape(python) + " -m " + shell_escape("hotpath_py.bench_cuda") +
+  std::string cmd = shell_escape(python) + " -m " + shell_escape("hotpath_py.bench_cuda") +
         " --kernel " + shell_escape(kernel) +
         " --shapes " + shell_escape(shapes) +
         " --dtype " + shell_escape(dtype) +
@@ -1647,15 +1652,18 @@ std::string bench_helper_command(
         " --n-iter " + shell_escape(std::to_string(n_iter)) +
          " --repeats " + shell_escape(std::to_string(repeats)) +
          " --batch-ms-target " + shell_escape(std::to_string(batch_ms_target)) +
-         " --cuda-graph-replay " + shell_escape(cuda_graph_replay) +
-         " 2>&1";
+         " --cuda-graph-replay " + shell_escape(cuda_graph_replay);
+  if (flush_l2) cmd += " --flush-l2";
+  cmd += " 2>&1";
+  return cmd;
 }
 
 bool gpu_bench_available() {
-  const char* configured_python = std::getenv("RLPROF_PYTHON_EXECUTABLE");
+  const char* _py2 = std::getenv("HOTPATH_PYTHON_EXECUTABLE");
+  if (!_py2 || std::string(_py2).empty()) _py2 = std::getenv("RLPROF_PYTHON_EXECUTABLE");
   const std::string python =
-      configured_python != nullptr && std::string(configured_python).size() > 0
-          ? std::string(configured_python)
+      _py2 != nullptr && std::string(_py2).size() > 0
+          ? std::string(_py2)
           : (std::filesystem::exists(".venv/bin/python") ? ".venv/bin/python" : "python3");
   const std::string probe =
       shell_escape(python) + " -c " +
@@ -1689,6 +1697,8 @@ BenchCommandOptions parse_bench_args(const Args& args) {
       options.batch_ms_target = std::stod(require_value(args, i, "--batch-ms-target"));
     } else if (args[i] == "--cuda-graph-replay") {
       options.cuda_graph_replay = require_value(args, i, "--cuda-graph-replay");
+    } else if (args[i] == "--flush-l2") {
+      options.flush_l2 = true;
     } else if (args[i] == "--output") {
       options.output = require_value(args, i, "--output");
     } else if (args[i] == "--yes") {
@@ -1759,7 +1769,8 @@ std::string run_bench_command(const BenchCommandOptions& options) {
             effective_options.n_iter,
             effective_options.repeats,
             effective_options.batch_ms_target,
-            effective_options.cuda_graph_replay));
+            effective_options.cuda_graph_replay,
+            effective_options.flush_l2));
     const auto output = hotpath::bench::parse_bench_json(raw_json);
     const auto output_path =
         hotpath::bench::resolve_bench_output_path(effective_options.kernel, effective_options.output);
@@ -1808,7 +1819,7 @@ int handle_bench(const Args& args) {
   if (options.show_help) {
     std::cout << "Usage: hotpath bench --kernel NAME --shapes SPEC [options]\n"
               << "       flags: --yes\n"
-              << "       timing: --batch-ms-target FLOAT --cuda-graph-replay off|on\n"
+              << "       timing: --batch-ms-target FLOAT --cuda-graph-replay off|on --flush-l2\n"
               << "       remote: --target HOST --target-workdir DIR\n"
               << "       output: --output PATH|auto|none\n";
     return 0;
@@ -2275,7 +2286,7 @@ _hotpath_complete() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local commands="profile report aggregate bench bench-compare diff export trace artifacts validate traffic doctor server target recover lock-clocks unlock-clocks reset-defaults completion help"
+  local commands="version profile serve-profile serve-report disagg-config report aggregate bench bench-compare diff export trace artifacts manifest validate cleanup traffic doctor server target recover soak-profile cluster-profile lock-clocks unlock-clocks reset-defaults completion help"
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
     return
@@ -2283,6 +2294,12 @@ _hotpath_complete() {
   case "${COMP_WORDS[1]}" in
         profile)
           COMPREPLY=( $(compgen -W "--model --server --attach --attach-pid --target --target-workdir --prompts --rollouts --min-tokens --max-tokens --input-len --port --tp --peer-servers --trust-remote-code --discard-first-run --repeat --fetch-nsys-rep --output --yes --help" -- "$cur") )
+          ;;
+        serve-profile)
+          COMPREPLY=( $(compgen -W "--endpoint --duration --traffic --output --model --nsys --server-pid --server-log --engine --help" -- "$cur") )
+          ;;
+        serve-report|disagg-config)
+          COMPREPLY=( $(compgen -f -- "$cur") )
           ;;
         server)
           COMPREPLY=( $(compgen -W "start stop list show prune --name --model --port --tp --max-model-len --trust-remote-code --startup-timeout-s --help" -- "$cur") )
@@ -2330,7 +2347,13 @@ complete -F _hotpath_complete hotpath
 _hotpath() {
   local -a commands
   commands=(
+    'version:print hotpath version'
     'profile:run GPU profiling under RL traffic'
+    'serve-profile:profile a live vLLM or SGLang server'
+    'serve-report:view a serving analysis report'
+    'disagg-config:print serving deployment configs'
+    'soak-profile:run repeated serving profiles with a shared server'
+    'cluster-profile:profile across multiple remote targets'
     'report:view a saved profile'
     'aggregate:combine multiple profiles'
     'bench:benchmark kernel implementations'
@@ -2339,7 +2362,9 @@ _hotpath() {
     'export:export profile data'
     'trace:view raw trace artifact paths'
     'artifacts:view stored artifact paths'
+    'manifest:write artifact manifest'
     'validate:validate stored profile against raw artifacts'
+    'cleanup:remove old hotpath artifacts'
     'traffic:run traffic generator'
     'doctor:check local profiling environment'
     'server:manage local warm vllm servers'
@@ -2362,6 +2387,15 @@ _hotpath() {
       case $words[2] in
         profile)
           _arguments '--model[model name]' '--server[managed warm server name]' '--attach[existing server url]' '--attach-pid[remote process id; requires nsys PID attach support]' '--target[ssh target host]' '--target-workdir[remote hotpath workdir]' '--prompts[prompt count]' '--rollouts[rollouts per prompt]' '--min-tokens[min output tokens]' '--max-tokens[max output tokens]' '--input-len[input length]' '--port[server port]' '--tp[tensor parallel size]' '--peer-servers[peer endpoints]' '--trust-remote-code[trust remote code]' '--discard-first-run[run and discard a warmup pass]' '--repeat[repeat count]' '--fetch-nsys-rep[copy the remote nsys report locally]' '--output[output path]' '--yes[accept saved defaults]' '--help[show help]'
+          ;;
+        serve-profile)
+          _arguments '--endpoint[serving endpoint url]' '--duration[profiling duration seconds]' '--traffic[jsonl or sharegpt traffic file]' '--output[output directory]' '--model[model name]' '--nsys[capture kernel trace via nsys]' '--server-pid[external vLLM server pid for nsys attach]' '--server-log[path to vLLM DEBUG log for server-side timing]' '--engine[serving engine]:engine:(vllm sglang)' '--help[show help]'
+          ;;
+        serve-report)
+          _files
+          ;;
+        disagg-config)
+          _arguments '--format[config format]:format:(vllm llmd dynamo all)' '*:path:_files'
           ;;
         server)
           _arguments '1:action:(start stop list show prune)' '--name[managed server name]' '--model[model name]' '--port[server port]' '--tp[tensor parallel size]' '--max-model-len[managed server max model length]' '--trust-remote-code[trust remote code]' '--startup-timeout-s[startup timeout seconds]' '--help[show help]'
@@ -2396,7 +2430,13 @@ _hotpath "$@"
   }
   if (shell == "fish") {
     return R"(complete -c hotpath -f
+complete -c hotpath -n '__fish_use_subcommand' -a 'version' -d 'print hotpath version'
 complete -c hotpath -n '__fish_use_subcommand' -a 'profile' -d 'run GPU profiling under RL traffic'
+complete -c hotpath -n '__fish_use_subcommand' -a 'serve-profile' -d 'profile a live vllm or sglang server'
+complete -c hotpath -n '__fish_use_subcommand' -a 'serve-report' -d 'view a serving analysis report'
+complete -c hotpath -n '__fish_use_subcommand' -a 'disagg-config' -d 'print serving deployment configs'
+complete -c hotpath -n '__fish_use_subcommand' -a 'soak-profile' -d 'run repeated serving profiles with a shared server'
+complete -c hotpath -n '__fish_use_subcommand' -a 'cluster-profile' -d 'profile across multiple remote targets'
 complete -c hotpath -n '__fish_use_subcommand' -a 'report' -d 'view a saved profile'
 complete -c hotpath -n '__fish_use_subcommand' -a 'aggregate' -d 'combine multiple profiles'
 complete -c hotpath -n '__fish_use_subcommand' -a 'bench' -d 'benchmark kernel implementations'
@@ -2405,7 +2445,9 @@ complete -c hotpath -n '__fish_use_subcommand' -a 'diff' -d 'compare two profile
 complete -c hotpath -n '__fish_use_subcommand' -a 'export' -d 'export profile data'
 complete -c hotpath -n '__fish_use_subcommand' -a 'trace' -d 'view raw trace artifact paths'
 complete -c hotpath -n '__fish_use_subcommand' -a 'artifacts' -d 'view stored artifact paths'
+complete -c hotpath -n '__fish_use_subcommand' -a 'manifest' -d 'write artifact manifest'
 complete -c hotpath -n '__fish_use_subcommand' -a 'validate' -d 'validate stored profile against raw artifacts'
+complete -c hotpath -n '__fish_use_subcommand' -a 'cleanup' -d 'remove old hotpath artifacts'
 complete -c hotpath -n '__fish_use_subcommand' -a 'traffic' -d 'run traffic generator'
 complete -c hotpath -n '__fish_use_subcommand' -a 'doctor' -d 'check local profiling environment'
 complete -c hotpath -n '__fish_use_subcommand' -a 'server' -d 'manage local warm vllm servers'
@@ -2436,6 +2478,16 @@ complete -c hotpath -n '__fish_seen_subcommand_from profile' -l repeat
 complete -c hotpath -n '__fish_seen_subcommand_from profile' -l fetch-nsys-rep
 complete -c hotpath -n '__fish_seen_subcommand_from profile' -l output
 complete -c hotpath -n '__fish_seen_subcommand_from profile' -l yes
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l endpoint
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l duration
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l traffic
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l output
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l model
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l nsys
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l server-pid
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l server-log
+complete -c hotpath -n '__fish_seen_subcommand_from serve-profile' -l engine -a 'vllm sglang'
+complete -c hotpath -n '__fish_seen_subcommand_from disagg-config' -l format -a 'vllm llmd dynamo all'
 complete -c hotpath -n '__fish_seen_subcommand_from bench' -l kernel -a 'silu_and_mul fused_add_rms_norm rotary_embedding'
 complete -c hotpath -n '__fish_seen_subcommand_from bench' -l target
 complete -c hotpath -n '__fish_seen_subcommand_from bench' -l target-workdir
@@ -2495,6 +2547,9 @@ void print_help() {
             << "  profile (--model MODEL | --server NAME | --attach URL) [options] [--repeat N]\n"
             << "    optional: --server NAME --attach URL --attach-pid PID --target HOST --target-workdir DIR\n"
             << "              --peer-servers URL1,URL2,... --discard-first-run --yes\n"
+            << "  serve-profile [options]\n"
+            << "  serve-report <serve_profile.db>\n"
+            << "  disagg-config <serve_profile.db> [--format vllm|llmd|dynamo|all]\n"
             << "  server <start|stop|list|show|prune> ...\n"
             << "  cluster-profile --targets T1,T2 [profile options] --output base [--allow-duplicate-hosts]\n"
             << "  soak-profile [profile options] --iterations N --output base [--pause-sec N] [--validate-each]\n"
@@ -2522,23 +2577,41 @@ void print_help() {
 
 int handle_serve_profile(const Args& args) {
   hotpath::ServeProfileOptions opts;
+  bool saw_endpoint = false;
+  bool saw_model = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
-    if (args[i] == "--endpoint") { opts.endpoint = require_value(args, i, "--endpoint"); }
+    if (args[i] == "--endpoint") { opts.endpoint = require_value(args, i, "--endpoint"); saw_endpoint = true; }
     else if (args[i] == "--duration") { opts.duration_seconds = std::stoi(require_value(args, i, "--duration")); }
     else if (args[i] == "--traffic") { opts.traffic_path = require_value(args, i, "--traffic"); }
     else if (args[i] == "--output") { opts.output = require_value(args, i, "--output"); }
     else if (args[i] == "--nsys") { opts.use_nsys = true; }
+    else if (args[i] == "--server-pid") { opts.server_pid = std::stoll(require_value(args, i, "--server-pid")); }
+    else if (args[i] == "--server-log") { opts.server_log_path = require_value(args, i, "--server-log"); }
     else if (args[i] == "--engine") { opts.engine = require_value(args, i, "--engine"); }
+    else if (args[i] == "--model") { opts.model = require_value(args, i, "--model"); saw_model = true; }
+    else if (args[i] == "--concurrency") { opts.max_concurrency = std::stoi(require_value(args, i, "--concurrency")); }
     else if (args[i] == "--help") {
       std::cout << "Usage: hotpath serve-profile [options]\n"
-                << "  --endpoint URL     vLLM/SGLang endpoint (default: http://localhost:8000)\n"
+                << "  --endpoint URL     profile an existing vLLM/SGLang endpoint (default: http://localhost:8000)\n"
                 << "  --duration N       profiling duration in seconds (default: 60)\n"
                 << "  --traffic PATH     JSONL or ShareGPT traffic file\n"
+                << "  --concurrency N    max concurrent in-flight requests (default: 1)\n"
                 << "  --output PATH      output directory (default: .hotpath/serve_run)\n"
+                << "  --model NAME       launch and profile a managed vLLM server for this model\n"
                 << "  --nsys             also capture kernel trace via nsys\n"
+                << "  --server-pid PID   external vLLM server PID for nsys attach\n"
+                << "  --server-log PATH  vLLM DEBUG log for server-side timing/cache analysis\n"
                 << "  --engine TYPE      vllm or sglang (default: vllm)\n";
       return 0;
     }
+  }
+  if (saw_endpoint && saw_model) {
+    std::cerr << "error: --endpoint and --model are mutually exclusive\n";
+    return 1;
+  }
+  if (saw_model) {
+    opts.launch_managed_server = true;
+    opts.endpoint.clear();
   }
   return hotpath::run_serve_profile(opts);
 }
@@ -2555,8 +2628,99 @@ int handle_serve_report(const Args& args) {
     std::cerr << "Usage: hotpath serve-report <serve_profile.db>\n";
     return 1;
   }
-  // Will be implemented in Task 12
-  std::cerr << "serve-report: " << db_path << "\n";
+  if (!std::filesystem::exists(db_path)) {
+    std::cerr << "error: file not found: " << db_path << "\n";
+    return 1;
+  }
+  const auto kv = hotpath::load_serve_analysis(db_path);
+  if (kv.empty()) {
+    std::cerr << "error: no serve analysis data in " << db_path << "\n";
+    std::cerr << "Run 'hotpath serve-profile' first.\n";
+    return 1;
+  }
+  auto get = [&](const std::string& k, const std::string& def = "") -> std::string {
+    auto it = kv.find(k);
+    return (it != kv.end()) ? it->second : def;
+  };
+  auto get_d = [&](const std::string& k) -> double {
+    try { return std::stod(get(k, "0")); } catch (...) { return 0.0; }
+  };
+  auto get_i = [&](const std::string& k) -> int {
+    try { return std::stoi(get(k, "0")); } catch (...) { return 0; }
+  };
+
+  hotpath::ServeReportData d;
+  d.model_name = get("meta.model");
+  d.engine = get("meta.engine");
+  d.gpu_info = std::to_string(get_i("meta.gpu_count")) + "x " + get("meta.gpu_name");
+  d.total_requests = get_i("meta.total_requests");
+  d.duration_seconds = get_d("meta.duration_seconds");
+  d.throughput_rps = get_d("meta.throughput_rps");
+
+  d.queue_wait_available = get("latency.queue_available") == "true";
+  d.server_timing_available = get("latency.server_timing_available") == "true";
+  d.server_timing_match_method = get("latency.server_timing_match_method");
+  d.server_timing_max_offset_ms = get_d("latency.server_timing_match_max_offset_ms");
+  d.server_timing_remote_correlation =
+      get("latency.server_timing_remote_correlation") == "true";
+  d.queue_p50 = get_d("latency.queue_p50");
+  d.queue_p90 = get_d("latency.queue_p90");
+  d.queue_p99 = get_d("latency.queue_p99");
+  d.server_prefill_p50 = get_d("latency.server_prefill_p50");
+  d.server_prefill_p90 = get_d("latency.server_prefill_p90");
+  d.server_prefill_p99 = get_d("latency.server_prefill_p99");
+  d.server_decode_p50 = get_d("latency.server_decode_p50");
+  d.server_decode_p90 = get_d("latency.server_decode_p90");
+  d.server_decode_p99 = get_d("latency.server_decode_p99");
+  d.server_ttft_mean_ms = get_d("latency.server_ttft_mean_ms");
+  d.prefill_p50 = get_d("latency.prefill_p50");
+  d.prefill_p90 = get_d("latency.prefill_p90");
+  d.prefill_p99 = get_d("latency.prefill_p99");
+  d.decode_total_p50 = get_d("latency.decode_total_p50");
+  d.decode_total_p90 = get_d("latency.decode_total_p90");
+  d.decode_total_p99 = get_d("latency.decode_total_p99");
+  d.decode_per_token_p50 = get_d("latency.decode_per_token_p50");
+  d.decode_per_token_p90 = get_d("latency.decode_per_token_p90");
+  d.decode_per_token_p99 = get_d("latency.decode_per_token_p99");
+  d.e2e_p50 = get_d("latency.e2e_p50");
+  d.e2e_p90 = get_d("latency.e2e_p90");
+  d.e2e_p99 = get_d("latency.e2e_p99");
+
+  d.gpu_phase_available = get("phase.available") == "true";
+  d.prefill_compute_pct = get_d("phase.prefill_pct");
+  d.decode_compute_pct = get_d("phase.decode_pct");
+  d.other_idle_pct = get_d("phase.other_pct");
+
+  d.cache_hit_rate_available = get("cache.hit_rate_available") == "true";
+  d.cache_usage_available = get("cache.usage_available") == "true";
+  d.cache_hit_rate_aggregate_only = get("cache.hit_rate_aggregate_only") == "true";
+  d.cache_histogram_available = get("cache.histogram_available") == "true";
+  d.cache_hit_rate = get_d("cache.hit_rate");
+  d.avg_cache_usage = get_d("cache.avg_usage");
+  d.peak_cache_usage = get_d("cache.peak_usage");
+  d.evictions = get_i("cache.evictions");
+  for (int i = 0; i < 5; ++i) {
+    d.cache_hit_rate_histogram[static_cast<size_t>(i)] =
+        get_i("cache.histogram_" + std::to_string(i));
+  }
+
+  d.prefix_sharing_available = get("prefix.available") == "true";
+  d.unique_prefixes = get_i("prefix.unique_prefixes");
+  d.cacheable_tokens_pct = get_d("prefix.cacheable_tokens_pct");
+
+  d.should_disaggregate = get("disagg.should") == "true";
+  d.optimal_p = get_i("disagg.optimal_p");
+  d.optimal_d = get_i("disagg.optimal_d");
+  // throughput_improvement defaults to 0.0 via get_d when missing; clamp to
+  // avoid displaying negative throughput if DB is missing this key.
+  d.projected_throughput_pct = std::max(0.0, (get_d("disagg.throughput_improvement") - 1.0) * 100.0);
+  d.projected_throughput_rps = get_d("disagg.disagg_throughput");
+  d.mono_p99_ttft = get_d("disagg.mono_p99_ttft");
+  d.disagg_p99_ttft = get_d("disagg.disagg_p99_ttft");
+  d.min_bandwidth_gbps = get_d("disagg.min_bandwidth");
+  d.advisor_caveat = get("disagg.caveat");
+
+  std::cout << hotpath::render_serve_report(d);
   return 0;
 }
 
@@ -2575,8 +2739,57 @@ int handle_disagg_config(const Args& args) {
     std::cerr << "Usage: hotpath disagg-config <serve_profile.db> [--format vllm|llmd|dynamo|all]\n";
     return 1;
   }
-  // Will load DisaggEstimate from DB and generate configs
-  std::cerr << "disagg-config: " << db_path << " format=" << format << "\n";
+  if (!std::filesystem::exists(db_path)) {
+    std::cerr << "error: file not found: " << db_path << "\n";
+    return 1;
+  }
+  const auto kv = hotpath::load_serve_analysis(db_path);
+  if (kv.empty()) {
+    std::cerr << "error: no serve analysis data in " << db_path << "\n";
+    return 1;
+  }
+  auto get = [&](const std::string& k, const std::string& def = "") -> std::string {
+    auto it = kv.find(k);
+    return (it != kv.end()) ? it->second : def;
+  };
+  auto get_d = [&](const std::string& k) -> double {
+    try { return std::stod(get(k, "0")); } catch (...) { return 0.0; }
+  };
+  auto get_i = [&](const std::string& k) -> int {
+    try { return std::stoi(get(k, "0")); } catch (...) { return 0; }
+  };
+
+  hotpath::DisaggEstimate est;
+  est.should_disaggregate = get("disagg.should") == "true";
+  est.optimal_prefill_gpus = get_i("disagg.optimal_p");
+  est.optimal_decode_gpus = get_i("disagg.optimal_d");
+  est.mono_throughput_rps = get_d("disagg.mono_throughput");
+  est.disagg_throughput_rps = get_d("disagg.disagg_throughput");
+  est.throughput_improvement = get_d("disagg.throughput_improvement");
+  est.mono_p99_ttft_ms = get_d("disagg.mono_p99_ttft");
+  est.disagg_p99_ttft_ms = get_d("disagg.disagg_p99_ttft");
+  est.kv_transfer_overhead_ms = get_d("disagg.kv_transfer_overhead");
+  est.min_bandwidth_gbps = get_d("disagg.min_bandwidth");
+  est.reason = get("disagg.reason");
+
+  const std::string model_name = get("meta.model", "model");
+
+  if (format == "vllm" || format == "all") {
+    std::cout << hotpath::generate_vllm_config(est, model_name);
+    if (format == "all") std::cout << "\n---\n\n";
+  }
+  if (format == "llmd" || format == "all") {
+    std::cout << hotpath::generate_llmd_config(est, model_name);
+    if (format == "all") std::cout << "\n---\n\n";
+  }
+  if (format == "dynamo" || format == "all") {
+    std::cout << hotpath::generate_dynamo_config(est, model_name);
+  }
+  if (format != "vllm" && format != "llmd" && format != "dynamo" && format != "all") {
+    std::cerr << "unknown format: " << format << " (use vllm, llmd, dynamo, or all)\n";
+    return 1;
+  }
+
   return 0;
 }
 
@@ -2585,78 +2798,113 @@ int handle_disagg_config(const Args& args) {
 int main(int argc, char** argv) {
   try {
   if (argc < 2) {
-      hotpath::interactive::print_header("hotpath · profile your rl environment");
+      hotpath::interactive::print_header("hotpath · the profiler for LLM inference");
       const auto choice = hotpath::interactive::prompt_choice(
           "What would you like to do?",
           {
-              "Profile - run GPU profiling under RL traffic",
-              "Report - view a saved profile",
-              "Aggregate - combine multiple profiles",
-              "Bench - benchmark kernel implementations",
-              "Diff - compare two profiles",
-              "Export - export profile data",
-              "Bench compare - compare archived bench runs",
-              "Trace - view raw trace artifacts",
-              "Artifacts - view stored artifact paths",
-              "Validate - check db vs raw artifacts",
-              "Doctor - check local profiling environment",
-              "Targets - manage saved ssh targets",
-              "Recover - recover remote profile artifacts",
-              "Lock clocks - lock GPU clocks for reproducibility",
-              "Unlock clocks",
-              "Reset defaults",
+              "serve-profile   profile a live vLLM/SGLang server",
+              "serve-report    view a serving analysis report",
+              "profile         GPU profiling under RL traffic",
+              "report          view a saved profile",
+              "aggregate       combine multiple profiles",
+              "bench           benchmark kernel implementations",
+              "diff            compare two profiles",
+              "export          export profile data",
+              "doctor          check local environment",
+              "targets         manage SSH targets",
+              "lock-clocks     lock GPU clocks",
+              "unlock-clocks",
+              "reset-defaults",
           },
           0);
       if (!choice.has_value()) {
         return 0;
       }
       if (*choice == 0) {
-        return interactive_profile_flow(hotpath::interactive::load_profile_defaults());
+        // Interactive serve-profile flow
+        hotpath::interactive::print_header("serve-profile — profile a live inference server");
+        const auto endpoint = hotpath::interactive::prompt_string(
+            "Endpoint URL", "http://localhost:8000");
+        if (!endpoint.has_value() || endpoint->empty()) return 0;
+
+        const auto engine_choice = hotpath::interactive::prompt_choice(
+            "Serving engine", {"vllm", "sglang"}, 0);
+        if (!engine_choice.has_value()) return 0;
+        const std::string engine = (*engine_choice == 0) ? "vllm" : "sglang";
+
+        const auto duration = hotpath::interactive::prompt_int("Duration (seconds)", 60);
+        if (!duration.has_value()) return 0;
+
+        const auto traffic = hotpath::interactive::prompt_string(
+            "Traffic file (JSONL path, or empty to just collect metrics)", "");
+
+        Args serve_args = {"serve-profile",
+                           "--endpoint", *endpoint,
+                           "--engine", engine,
+                           "--duration", std::to_string(*duration)};
+        if (traffic.has_value() && !traffic->empty()) {
+          serve_args.push_back("--traffic");
+          serve_args.push_back(*traffic);
+        }
+        return handle_serve_profile(serve_args);
       }
       if (*choice == 1) {
-        return interactive_report_flow();
+        // List .hotpath serve_profile.db files
+        hotpath::interactive::print_header("serve-report — view a serving analysis");
+        namespace fs = std::filesystem;
+        std::vector<std::string> dbs;
+        const fs::path hotpath_dir = ".hotpath";
+        if (fs::exists(hotpath_dir)) {
+          for (auto& entry : fs::recursive_directory_iterator(hotpath_dir)) {
+            if (entry.path().filename() == "serve_profile.db") {
+              dbs.push_back(entry.path().string());
+            }
+          }
+        }
+        if (dbs.empty()) {
+          std::cerr << "No serve-profile databases found in .hotpath/\n";
+          std::cerr << "Run 'hotpath serve-profile' first.\n";
+          return 0;
+        }
+        if (dbs.size() == 1) {
+          return handle_serve_report({"serve-report", dbs[0]});
+        }
+        const auto pick = hotpath::interactive::prompt_choice("Select a profile", dbs, 0);
+        if (!pick.has_value()) return 0;
+        return handle_serve_report({"serve-report", dbs[static_cast<size_t>(*pick)]});
       }
       if (*choice == 2) {
+        return interactive_profile_flow(hotpath::interactive::load_profile_defaults());
+      }
+      if (*choice == 3) {
+        return interactive_report_flow();
+      }
+      if (*choice == 4) {
         std::cout << "Usage: hotpath aggregate <a.db> <b.db> [more.db ...] --output out.db\n";
         return 0;
       }
-      if (*choice == 3) {
+      if (*choice == 5) {
         return interactive_bench_flow(hotpath::interactive::load_bench_defaults());
       }
-      if (*choice == 4) {
+      if (*choice == 6) {
         return interactive_diff_flow();
       }
-      if (*choice == 5) {
+      if (*choice == 7) {
         return interactive_export_flow();
       }
-      if (*choice == 6) {
-        return interactive_bench_compare_flow();
-      }
-      if (*choice == 7) {
-        return handle_trace({"trace"});
-      }
       if (*choice == 8) {
-        return handle_artifacts({"artifacts"});
-      }
-      if (*choice == 9) {
-        return handle_validate({"validate"});
-      }
-      if (*choice == 10) {
         return handle_doctor({"doctor"});
       }
-      if (*choice == 11) {
+      if (*choice == 9) {
         return handle_target({"target", "list"});
       }
-      if (*choice == 12) {
-        return handle_recover({"recover", "--help"});
-      }
-      if (*choice == 13) {
+      if (*choice == 10) {
         return handle_lock_clocks({"lock-clocks"});
       }
-      if (*choice == 14) {
+      if (*choice == 11) {
         return handle_unlock_clocks({"unlock-clocks"});
       }
-      if (*choice == 15) {
+      if (*choice == 12) {
         return handle_reset_defaults({"reset-defaults"});
       }
       return 0;

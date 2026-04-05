@@ -163,7 +163,8 @@ StabilityReport compute_stability_report(const std::vector<ProfileData>& profile
   const std::vector<MetricSpec> metric_specs = {
       {"vllm:num_preemptions_total", "preemptions (avg)", false},
       {"vllm:num_requests_waiting", "requests_waiting (peak)", true},
-      {"vllm:gpu_cache_usage_perc", "kv_cache_usage (peak)", true},
+      {"vllm:gpu_cache_usage_perc", "kv_cache_usage (peak)", true},   // vLLM < 0.19
+      {"vllm:kv_cache_usage_perc", "kv_cache_usage (peak)", true},    // vLLM 0.19+
   };
 
   for (const auto& spec : metric_specs) {

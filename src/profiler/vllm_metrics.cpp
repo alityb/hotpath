@@ -17,18 +17,25 @@ namespace {
 
 const std::unordered_set<std::string> kKeyMetrics = {
     "vllm:num_preemptions_total",
-    "vllm:gpu_cache_usage_perc",
+    "vllm:num_preemption_total",
+    "vllm:gpu_cache_usage_perc",            // vLLM < 0.19
+    "vllm:kv_cache_usage_perc",             // vLLM 0.19+
+    "vllm:cpu_cache_usage_perc",
     "vllm:num_requests_running",
     "vllm:num_requests_waiting",
-    "vllm:time_to_first_token_seconds_p50",
+    "vllm:time_to_first_token_seconds_p50",   // vLLM < 0.19 (deprecated gauges)
     "vllm:time_to_first_token_seconds_p99",
+    "vllm:time_to_first_token_seconds_sum",   // vLLM 0.19+ histogram components
+    "vllm:time_to_first_token_seconds_count",
     "vllm:time_per_output_token_seconds_p50",
     "vllm:time_per_output_token_seconds_p99",
     "vllm:prompt_tokens_total",
     "vllm:generation_tokens_total",
     "vllm:request_success_total",
     "vllm:avg_generation_throughput_toks_per_s",
-    "vllm:prefix_cache_hit_rate",
+    "vllm:prefix_cache_hit_rate",           // vLLM < 0.19 (deprecated gauge)
+    "vllm:prefix_cache_hits_total",         // vLLM 0.19+
+    "vllm:prefix_cache_queries_total",      // vLLM 0.19+
 };
 
 std::string run_command(const std::string& command) {
@@ -71,6 +78,7 @@ double now_seconds() {
 
 bool aggregate_by_average(const std::string& metric) {
   return metric == "vllm:gpu_cache_usage_perc" ||
+         metric == "vllm:kv_cache_usage_perc" ||
          metric == "vllm:prefix_cache_hit_rate" ||
          metric.find("_seconds_p50") != std::string::npos ||
          metric.find("_seconds_p99") != std::string::npos;

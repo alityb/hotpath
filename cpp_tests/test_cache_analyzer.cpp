@@ -53,6 +53,9 @@ int main() {
   // = (10*0 + 10*100 + 10*300 + 10*600 + 10*900) / (50*1000) = 19000/50000 = 0.38
   expect_true(std::abs(result.cache_hit_rate - 0.38) < 0.01,
               "cache_hit_rate: " + std::to_string(result.cache_hit_rate));
+  expect_true(result.cache_hit_rate_available, "cache_hit_rate should be available");
+  expect_true(!result.cache_hit_rate_aggregate_only, "per-request hit rate should not be aggregate-only");
+  expect_true(result.hit_rate_histogram_available, "histogram should be available");
 
   // Histogram check
   // 0%: 10, 1-25%: 10 (100/1000=10%), 25-50%: 10 (300/1000=30%), 50-75%: 10 (600/1000=60%), 75-100%: 10 (900/1000=90%)
@@ -72,8 +75,18 @@ int main() {
   expect_true(result.cache_pressure_seconds == 20.0,
               "pressure_seconds: " + std::to_string(result.cache_pressure_seconds));
 
-  // Evictions
-  expect_true(result.eviction_count >= 0, "eviction_count should be >= 0");
+  // Evictions: snapshots use preemption_total = 0 for i<40, then (i-40)/4 for i>=40.
+  // max = (59-40)/4 = 4, min = 0, so eviction_count = 4
+  expect_true(result.eviction_count == 4,
+              "eviction_count should be 4 (delta of preemption_total), got " +
+                  std::to_string(result.eviction_count));
+
+  const auto aggregate_only = hotpath::analyze_cache({}, snapshots, 0.42);
+  expect_true(aggregate_only.cache_hit_rate_available, "aggregate hit rate should be available");
+  expect_true(aggregate_only.cache_hit_rate_aggregate_only, "aggregate hit rate should be marked aggregate-only");
+  expect_true(!aggregate_only.hit_rate_histogram_available, "aggregate-only histogram should be unavailable");
+  expect_true(std::abs(aggregate_only.cache_hit_rate - 0.42) < 1e-9,
+              "aggregate cache_hit_rate: " + std::to_string(aggregate_only.cache_hit_rate));
 
   std::cerr << "test_cache_analyzer: all tests passed\n";
   return 0;

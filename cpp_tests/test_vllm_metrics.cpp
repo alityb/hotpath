@@ -132,5 +132,94 @@ ignored_metric 123
 
   fs::remove_all(temp_root);
 
+  // ── vLLM 0.19 metric name changes ──
+  // kv_cache_usage_perc replaces gpu_cache_usage_perc
+  {
+    const std::string text_019 = R"TXT(
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="Qwen"} 0.341
+vllm:prefix_cache_hits_total{engine="0",model_name="Qwen"} 1200.0
+vllm:prefix_cache_queries_total{engine="0",model_name="Qwen"} 2000.0
+vllm:time_to_first_token_seconds_sum{engine="0",model_name="Qwen"} 0.3496
+vllm:time_to_first_token_seconds_count{engine="0",model_name="Qwen"} 18.0
+vllm:num_requests_running{engine="0",model_name="Qwen"} 4
+)TXT";
+    const auto parsed_019 = hotpath::profiler::parse_metrics_text(text_019);
+    std::multimap<std::string, double> v019(parsed_019.begin(), parsed_019.end());
+    expect_true(v019.count("vllm:kv_cache_usage_perc") == 1,
+                "FAIL: vllm:kv_cache_usage_perc should be recognized (vLLM 0.19)");
+    expect_true(std::abs(v019.find("vllm:kv_cache_usage_perc")->second - 0.341) < 1e-9,
+                "FAIL: kv_cache_usage_perc value should be 0.341");
+    expect_true(v019.count("vllm:prefix_cache_hits_total") == 1,
+                "FAIL: prefix_cache_hits_total should be recognized");
+    expect_true(v019.find("vllm:prefix_cache_hits_total")->second == 1200.0,
+                "FAIL: prefix_cache_hits_total value should be 1200");
+    expect_true(v019.count("vllm:prefix_cache_queries_total") == 1,
+                "FAIL: prefix_cache_queries_total should be recognized");
+    expect_true(v019.count("vllm:time_to_first_token_seconds_sum") == 1,
+                "FAIL: time_to_first_token_seconds_sum should be recognized (vLLM 0.19)");
+    expect_true(v019.count("vllm:time_to_first_token_seconds_count") == 1,
+                "FAIL: time_to_first_token_seconds_count should be recognized (vLLM 0.19)");
+    expect_true(std::abs(v019.find("vllm:time_to_first_token_seconds_sum")->second - 0.3496) < 1e-9,
+                "FAIL: time_to_first_token_seconds_sum value mismatch");
+    expect_true(v019.find("vllm:time_to_first_token_seconds_count")->second == 18.0,
+                "FAIL: time_to_first_token_seconds_count value should be 18");
+    expect_true(v019.count("vllm:num_requests_running") == 1,
+                "FAIL: num_requests_running should still be recognized in vLLM 0.19 format");
+  }
+
+  // kv_cache_usage_perc should be averaged (not summed) across cluster nodes
+  {
+    const std::vector<hotpath::MetricSample> kv_samples = {
+        {.sample_time = 0.0, .source = "cluster", .metric = "vllm:kv_cache_usage_perc", .value = 0.4},
+        {.sample_time = 1.0, .source = "cluster", .metric = "vllm:kv_cache_usage_perc", .value = 0.6},
+    };
+    const auto kv_summaries = hotpath::profiler::summarize_samples(kv_samples);
+    expect_true(kv_summaries.size() == 1, "FAIL: expected one kv_cache summary");
+    expect_true(kv_summaries[0].metric == "vllm:kv_cache_usage_perc",
+                "FAIL: expected kv_cache_usage_perc summary");
+    expect_true(kv_summaries[0].avg.has_value() &&
+                    std::abs(*kv_summaries[0].avg - 0.5) < 1e-9,
+                "FAIL: kv_cache_usage_perc should average to 0.5, got " +
+                    std::to_string(kv_summaries[0].avg.value_or(-1)));
+  }
+
+  // Counter metrics (prefix_cache_hits_total, queries_total, sum, count) should
+  // be collected and summed (not averaged) at the cluster level
+  {
+    const std::vector<hotpath::MetricSample> counter_samples = {
+        {.sample_time = 0.0, .source = "cluster", .metric = "vllm:prefix_cache_hits_total", .value = 100.0},
+        {.sample_time = 1.0, .source = "cluster", .metric = "vllm:prefix_cache_hits_total", .value = 150.0},
+        {.sample_time = 0.0, .source = "cluster", .metric = "vllm:prefix_cache_queries_total", .value = 200.0},
+        {.sample_time = 1.0, .source = "cluster", .metric = "vllm:prefix_cache_queries_total", .value = 300.0},
+        {.sample_time = 0.0, .source = "cluster", .metric = "vllm:time_to_first_token_seconds_sum", .value = 0.2},
+        {.sample_time = 1.0, .source = "cluster", .metric = "vllm:time_to_first_token_seconds_sum", .value = 0.35},
+        {.sample_time = 0.0, .source = "cluster", .metric = "vllm:time_to_first_token_seconds_count", .value = 10.0},
+        {.sample_time = 1.0, .source = "cluster", .metric = "vllm:time_to_first_token_seconds_count", .value = 18.0},
+    };
+    const auto counter_summaries = hotpath::profiler::summarize_samples(counter_samples);
+    std::multimap<std::string, hotpath::MetricSummary> by_metric;
+    for (const auto& s : counter_summaries) by_metric.emplace(s.metric, s);
+
+    // All four counter metrics should appear
+    expect_true(by_metric.count("vllm:prefix_cache_hits_total") == 1,
+                "FAIL: prefix_cache_hits_total should appear in summaries");
+    expect_true(by_metric.count("vllm:prefix_cache_queries_total") == 1,
+                "FAIL: prefix_cache_queries_total should appear in summaries");
+    expect_true(by_metric.count("vllm:time_to_first_token_seconds_sum") == 1,
+                "FAIL: time_to_first_token_seconds_sum should appear in summaries");
+    expect_true(by_metric.count("vllm:time_to_first_token_seconds_count") == 1,
+                "FAIL: time_to_first_token_seconds_count should appear in summaries");
+
+    // peak (max observed) should be the later counter value
+    const auto& hits_summary = by_metric.find("vllm:prefix_cache_hits_total")->second;
+    expect_true(hits_summary.peak.has_value() && *hits_summary.peak == 150.0,
+                "FAIL: hits_total peak should be 150");
+    expect_true(hits_summary.min.has_value() && *hits_summary.min == 100.0,
+                "FAIL: hits_total min should be 100");
+  }
+
+  std::cerr << "test_vllm_metrics: all tests passed\n";
   return 0;
 }

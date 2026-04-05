@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -282,31 +283,47 @@ std::optional<int> prompt_choice(
     }
   }
 
-  // Interactive arrow-key selection.
+  // Interactive arrow-key selection with viewport scrolling.
+  // We only render a bounded window of options so the total height never
+  // exceeds the terminal — which would cause scrolling that breaks the
+  // cursor-up redraw logic.
   struct termios saved_termios{};
   tcgetattr(STDIN_FILENO, &saved_termios);
   struct termios raw = saved_termios;
   raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
   tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 
+  // Determine how many items to show at once.
+  struct winsize ws{};
+  ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+  const int term_rows = (ws.ws_row > 6) ? ws.ws_row - 6 : 8;
   const int n = static_cast<int>(options.size());
+  const int max_vis = std::min(n, std::max(4, term_rows));
+
   int selected = std::clamp(default_index, 0, n - 1);
+  int vp_start = 0;          // index of first visible item
   int rendered_lines = 0;
 
   const auto render = [&]() {
+    // Keep selected item inside the viewport.
+    if (selected < vp_start) vp_start = selected;
+    if (selected >= vp_start + max_vis) vp_start = selected - max_vis + 1;
+
     rendered_lines = 0;
-    std::cout << "  " << color_code(CYAN) << "? " << color_code(RESET)
+    std::cout << "\r  " << color_code(CYAN) << "? " << color_code(RESET)
               << color_code(BOLD) << label << color_code(RESET)
               << "  " << color_code(DIM) << "(↑↓ · enter · q)"
-              << color_code(RESET) << "\n";
+              << color_code(RESET) << "\033[K\n";
     ++rendered_lines;
-    for (int i = 0; i < n; ++i) {
+
+    for (int i = vp_start; i < vp_start + max_vis; ++i) {
       if (i == selected) {
-        std::cout << "  " << color_code(CYAN) << "> " << color_code(RESET)
-                  << options[static_cast<std::size_t>(i)] << "\n";
+        std::cout << "\r  " << color_code(CYAN) << "> " << color_code(RESET)
+                  << options[static_cast<std::size_t>(i)] << "\033[K\n";
       } else {
-        std::cout << "    " << color_code(DIM)
-                  << options[static_cast<std::size_t>(i)] << color_code(RESET) << "\n";
+        std::cout << "\r    " << color_code(DIM)
+                  << options[static_cast<std::size_t>(i)]
+                  << color_code(RESET) << "\033[K\n";
       }
       ++rendered_lines;
     }
@@ -314,7 +331,17 @@ std::optional<int> prompt_choice(
   };
 
   if (use_ansi_control()) {
-    std::cout << "\033[?25l";
+    std::cout << "\033[?25l";  // hide cursor while drawing
+
+    // Reserve vertical space so the initial render never causes the terminal
+    // to scroll (which would break the cursor-save/restore logic below).
+    const int reserve = max_vis + 1;
+    for (int i = 0; i < reserve; ++i) std::cout << '\n';
+    // CUU (up N) + CR to reach column 0 — both universally supported VT100.
+    std::cout << "\033[" << reserve << "A\r";
+    // DEC save cursor (ESC 7): original VT100 spec, supported by every terminal.
+    // We restore to this exact position before every redraw instead of counting lines.
+    std::cout << "\0337";
   }
   render();
 
@@ -322,9 +349,9 @@ std::optional<int> prompt_choice(
   bool running = true;
   while (running) {
     char c = 0;
-    if (read(STDIN_FILENO, &c, 1) != 1) {
-      break;
-    }
+    if (read(STDIN_FILENO, &c, 1) != 1) break;
+
+    bool needs_redraw = false;
     if (c == '\n' || c == '\r') {
       result = selected;
       running = false;
@@ -336,32 +363,32 @@ std::optional<int> prompt_choice(
           read(STDIN_FILENO, &seq[1], 1) == 1 &&
           seq[0] == '[') {
         if (seq[1] == 'A') {
-          selected = (selected - 1 + n) % n; // up
+          selected = (selected - 1 + n) % n;  // up
+          needs_redraw = true;
         } else if (seq[1] == 'B') {
-          selected = (selected + 1) % n;     // down
+          selected = (selected + 1) % n;       // down
+          needs_redraw = true;
         }
       }
-      // Move cursor up by the number of rendered lines, then clear below.
-      // This is more robust than save/restore cursor (DECSC/DECRC) which
-      // breaks when the option list causes the terminal to scroll.
-      if (use_ansi_control()) {
-        std::cout << "\033[" << rendered_lines << "A\033[J";
-      }
+    }
+
+    if (needs_redraw && use_ansi_control()) {
+      std::cout << "\0338";  // DEC restore cursor to saved position (top of menu)
       render();
     }
   }
 
   if (use_ansi_control()) {
-    std::cout << "\033[?25h";
+    std::cout << "\033[?25h";  // restore cursor
   }
   tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
 
-  // Clear the selection menu and replace with confirmation line.
+  // Replace the menu with a single confirmation line.
   if (use_ansi_control()) {
-    std::cout << "\033[" << rendered_lines << "A\033[J";
+    std::cout << "\0338\033[J";  // restore to saved position, clear to end of screen
   }
   if (result.has_value()) {
-    std::cout << "  " << color_code(CYAN) << "✓ " << color_code(RESET)
+    std::cout << "  " << color_code(CYAN) << "\xe2\x9c\x93 " << color_code(RESET)
               << color_code(BOLD) << label << color_code(RESET)
               << "  " << color_code(DIM)
               << options[static_cast<std::size_t>(*result)] << color_code(RESET) << "\n";

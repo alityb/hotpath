@@ -51,4 +51,10 @@ std::vector<RequestTrace> query_traces_cached_gt(const std::filesystem::path& db
                                                  int64_t profile_id,
                                                  int min_cached_tokens);
 
+// Serve analysis key-value storage (persists analysis results for serve-report / disagg-config)
+void save_serve_analysis(const std::filesystem::path& db_path,
+                         const std::map<std::string, std::string>& kv);
+
+std::map<std::string, std::string> load_serve_analysis(const std::filesystem::path& db_path);
+
 }  // namespace hotpath

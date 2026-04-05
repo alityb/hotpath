@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "hotpath/clock_control.h"
+#include "hotpath/serve_profiler.h"
 
 namespace hotpath {
 namespace {
@@ -324,6 +325,34 @@ std::vector<DoctorCheck> run_doctor() {
       .status = environment.nsys_environment_ok ? DoctorStatus::kPass
                                                 : DoctorStatus::kWarn,
       .detail = environment.nsys_environment_detail,
+  });
+
+  // Serving readiness checks
+  const auto gpu = detect_gpus();
+  checks.push_back(DoctorCheck{
+      .name = "serve-profile GPUs",
+      .status = (gpu.count >= 2) ? DoctorStatus::kPass
+                : (gpu.count == 1) ? DoctorStatus::kWarn
+                : DoctorStatus::kFail,
+      .detail = (gpu.count > 0)
+                    ? (std::to_string(gpu.count) + "x " + gpu.name + " (" +
+                       std::to_string(gpu.memory_mb) + " MB)" +
+                       (gpu.count < 2 ? " — disaggregation needs >= 2 GPUs" : ""))
+                    : "no NVIDIA GPU detected",
+  });
+
+  // Check serving engines using the detected python
+  const std::string py = environment.python.found
+      ? shell_escape(environment.python.resolved_path) : "python3";
+
+  const auto sglang_check = run_command(
+      py + " -c \"import sglang; print(sglang.__version__)\"");
+  checks.push_back(DoctorCheck{
+      .name = "sglang (serve-profile)",
+      .status = sglang_check.ok ? DoctorStatus::kPass : DoctorStatus::kWarn,
+      .detail = sglang_check.ok
+                    ? ("sglang " + first_line(sglang_check.output))
+                    : "not found (pip install sglang[all])",
   });
 
   return checks;

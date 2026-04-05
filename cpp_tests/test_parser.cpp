@@ -31,7 +31,7 @@ void expect_true(bool condition, const std::string& message) {
 
 int main() {
   namespace fs = std::filesystem;
-  const fs::path temp_dir = fs::temp_directory_path() / "hotpath_cpp_tests";
+  const fs::path temp_dir = fs::temp_directory_path() / "hotpath_test_parser";
   fs::create_directories(temp_dir);
   const auto verify_records = [](const std::vector<hotpath::profiler::KernelRecord>& records) {
     expect_true(records.size() == 2, "expected two aggregated kernel records");

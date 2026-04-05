@@ -52,11 +52,12 @@ int main() {
                 "should be CACHE_FRIENDLY");
   }
 
-  // 3. PREFILL_HEAVY: prompt > 2048, output < prompt/4
+  // 3. PREFILL_HEAVY: prompt > 2048, output < prompt/4, prefill_fraction > 0.5
   {
     auto input = make_base();
     input.median_prompt_tokens = 4096;
     input.median_output_tokens = 256;
+    input.phase.prefill_fraction = 0.65;
     auto result = hotpath::classify_workload(input);
     expect_true(result.primary_class == WorkloadClass::PREFILL_HEAVY,
                 "should be PREFILL_HEAVY");

@@ -26,6 +26,17 @@ class ChronoBackend final : public BenchmarkBackend {
   }
 };
 
+// Write to a buffer larger than the CPU LLC to evict all cache lines.
+// Typical LLC sizes: 30-60 MB on server CPUs, 6-16 MB on consumer.
+// We use 64 MB to be safe.
+void flush_cpu_cache() {
+  static std::vector<char> flush_buf(64 * 1024 * 1024, 0);
+  // volatile write so the compiler can't optimize it away
+  for (size_t i = 0; i < flush_buf.size(); i += 64) {
+    static_cast<volatile char&>(flush_buf[i]) = static_cast<char>(i);
+  }
+}
+
 double percentile(std::vector<double> values, double quantile) {
   std::sort(values.begin(), values.end());
   const std::size_t index = static_cast<std::size_t>(
@@ -355,7 +366,8 @@ std::vector<BenchResult> benchmark_impl(
     const std::string& dtype,
     std::int64_t warmup,
     std::int64_t n_iter,
-    BenchmarkBackend* backend) {
+    BenchmarkBackend* backend,
+    bool flush_cache) {
   if (warmup < 0 || n_iter <= 0) {
     throw std::runtime_error("warmup must be >= 0 and n_iter must be > 0");
   }
@@ -378,6 +390,7 @@ std::vector<BenchResult> benchmark_impl(
     std::vector<double> times;
     times.reserve(static_cast<std::size_t>(n_iter));
     for (std::int64_t i = 0; i < n_iter; ++i) {
+      if (flush_cache) flush_cpu_cache();
       times.push_back(active_backend->measure_ms([&]() { implementation.fn(state); }));
       active_backend->synchronize();
     }
@@ -420,11 +433,12 @@ std::vector<BenchResult> benchmark_category(
     const std::string& dtype,
     std::int64_t warmup,
     std::int64_t n_iter,
-    BenchmarkBackend* backend) {
+    BenchmarkBackend* backend,
+    bool flush_cache) {
   std::vector<BenchResult> results;
   for (const KernelImpl& implementation : get_kernel_impls(category)) {
     const auto impl_results =
-        benchmark_impl(category, implementation, shapes, dtype, warmup, n_iter, backend);
+        benchmark_impl(category, implementation, shapes, dtype, warmup, n_iter, backend, flush_cache);
     results.insert(results.end(), impl_results.begin(), impl_results.end());
   }
   return results;

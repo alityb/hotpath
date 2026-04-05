@@ -71,6 +71,15 @@ sglang_num_total_tokens 50000
   expect_true(std::abs(m2.num_running_req - 8.0) < 0.01, "underscore num_running_req");
   expect_true(std::abs(m2.cache_hit_rate - 0.30) < 0.01, "underscore cache_hit_rate");
 
+  const std::string plural_fixture = R"(
+sglang:num_running_reqs 6
+sglang:num_queue_reqs 3
+sglang:token_usage 0.25
+)";
+  const auto m3 = hotpath::parse_sglang_metrics(plural_fixture);
+  expect_true(std::abs(m3.num_running_req - 6.0) < 0.01, "plural num_running_reqs");
+  expect_true(std::abs(m3.num_waiting_req - 3.0) < 0.01, "plural num_queue_reqs");
+
   // Test empty input
   const auto empty = hotpath::parse_sglang_metrics("");
   expect_true(empty.num_running_req == 0.0, "empty should be zero");

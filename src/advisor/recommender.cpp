@@ -9,11 +9,12 @@ std::string generate_vllm_config(const DisaggEstimate& estimate, const std::stri
   std::ostringstream ss;
 
   if (!estimate.should_disaggregate) {
+    const int tp = std::max(1, estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus);
     ss << "#!/bin/bash\n";
     ss << "# Monolithic deployment (disaggregation not recommended)\n";
     ss << "# Reason: " << estimate.reason << "\n\n";
     ss << "vllm serve " << model << " \\\n";
-    ss << "  --tensor-parallel-size " << (estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus) << "\n";
+    ss << "  --tensor-parallel-size " << tp << "\n";
     return ss.str();
   }
 
@@ -22,7 +23,7 @@ std::string generate_vllm_config(const DisaggEstimate& estimate, const std::stri
   ss << "# P:D ratio = " << estimate.optimal_prefill_gpus << ":"
      << estimate.optimal_decode_gpus << "\n";
   ss << "# Expected throughput improvement: "
-     << static_cast<int>((estimate.throughput_improvement - 1.0) * 100) << "%\n\n";
+     << static_cast<int>(std::lround((estimate.throughput_improvement - 1.0) * 100)) << "%\n\n";
 
   ss << "# Prefill instance\n";
   ss << "vllm serve " << model << " \\\n";
@@ -62,7 +63,7 @@ std::string generate_llmd_config(const DisaggEstimate& estimate, const std::stri
     ss << "# llm-d Helm values (monolithic)\n";
     ss << "model:\n";
     ss << "  name: " << model << "\n";
-    ss << "replicas: " << (estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus) << "\n";
+    ss << "replicas: " << std::max(1, estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus) << "\n";
     ss << "mode: monolithic\n";
     return ss.str();
   }
@@ -95,7 +96,7 @@ std::string generate_dynamo_config(const DisaggEstimate& estimate, const std::st
     ss << "spec:\n";
     ss << "  model: " << model << "\n";
     ss << "  mode: monolithic\n";
-    ss << "  replicas: " << (estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus) << "\n";
+    ss << "  replicas: " << std::max(1, estimate.optimal_prefill_gpus + estimate.optimal_decode_gpus) << "\n";
     return ss.str();
   }
 
@@ -128,9 +129,9 @@ std::string generate_summary(const DisaggEstimate& estimate, const std::string& 
     ss << "Optimal P:D ratio: " << estimate.optimal_prefill_gpus << ":"
        << estimate.optimal_decode_gpus << "\n";
     ss << "Projected throughput: +"
-       << static_cast<int>((estimate.throughput_improvement - 1.0) * 100)
+       << static_cast<int>(std::lround((estimate.throughput_improvement - 1.0) * 100))
        << "% (" << estimate.disagg_throughput_rps << " req/s)\n";
-    ss << "Projected p99 TTFT: " << estimate.mono_p99_ttft_ms << "ms -> "
+    ss << "Projected p99 TTFT (est.): " << estimate.mono_p99_ttft_ms << "ms -> "
        << estimate.disagg_p99_ttft_ms << "ms\n";
     ss << "Min network bandwidth: "
        << static_cast<int>(std::ceil(estimate.min_bandwidth_gbps)) << " Gbps\n";

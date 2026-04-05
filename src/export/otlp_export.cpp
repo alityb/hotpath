@@ -9,8 +9,7 @@
 namespace hotpath {
 namespace {
 
-std::string generate_hex_id(int bytes) {
-  static std::mt19937_64 rng(42);  // Deterministic for testing
+std::string generate_hex_id(std::mt19937_64& rng, int bytes) {
   std::ostringstream ss;
   for (int i = 0; i < bytes; ++i) {
     ss << std::hex << std::setw(2) << std::setfill('0')
@@ -83,14 +82,18 @@ std::string export_otlp_json(const std::vector<RequestTrace>& traces,
      << "\"value\":{\"stringValue\":\"" << json_escape(service_name) << "\"}}]},";
   ss << "\"scopeSpans\":[{\"scope\":{\"name\":\"hotpath\"},\"spans\":[";
 
+  // Local RNG seeded deterministically so identical input always produces
+  // identical output, regardless of how many times the function is called.
+  std::mt19937_64 rng(42);
+
   bool first = true;
   for (const auto& trace : traces) {
-    const std::string trace_id = generate_hex_id(16);
+    const std::string trace_id = generate_hex_id(rng, 16);
 
     // Root span: llm.request
     Span root;
     root.trace_id = trace_id;
-    root.span_id = generate_hex_id(8);
+    root.span_id = generate_hex_id(rng, 8);
     root.name = "llm.request";
     root.start_us = trace.arrival_us;
     root.end_us = trace.completion_us > 0 ? trace.completion_us : trace.arrival_us;
@@ -103,7 +106,7 @@ std::string export_otlp_json(const std::vector<RequestTrace>& traces,
     if (trace.prefill_start_us > 0) {
       Span queue;
       queue.trace_id = trace_id;
-      queue.span_id = generate_hex_id(8);
+      queue.span_id = generate_hex_id(rng, 8);
       queue.parent_span_id = root.span_id;
       queue.name = "llm.queue";
       queue.start_us = trace.arrival_us;
@@ -115,7 +118,7 @@ std::string export_otlp_json(const std::vector<RequestTrace>& traces,
     if (trace.prefill_start_us > 0 && trace.prefill_end_us > 0) {
       Span prefill;
       prefill.trace_id = trace_id;
-      prefill.span_id = generate_hex_id(8);
+      prefill.span_id = generate_hex_id(rng, 8);
       prefill.parent_span_id = root.span_id;
       prefill.name = "llm.prefill";
       prefill.start_us = trace.prefill_start_us;
@@ -129,7 +132,7 @@ std::string export_otlp_json(const std::vector<RequestTrace>& traces,
     if (trace.first_token_us > 0 && trace.last_token_us > 0) {
       Span decode;
       decode.trace_id = trace_id;
-      decode.span_id = generate_hex_id(8);
+      decode.span_id = generate_hex_id(rng, 8);
       decode.parent_span_id = root.span_id;
       decode.name = "llm.decode";
       decode.start_us = trace.first_token_us;

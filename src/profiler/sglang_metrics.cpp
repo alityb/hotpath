@@ -60,9 +60,11 @@ SglangMetrics parse_sglang_metrics(const std::string& text) {
   SglangMetrics m;
   const auto pairs = parse_sglang_metrics_text(text);
   for (const auto& [name, value] : pairs) {
-    if (name == "sglang:num_running_req" || name == "sglang_num_running_req") {
+    if (name == "sglang:num_running_req" || name == "sglang_num_running_req" ||
+        name == "sglang:num_running_reqs" || name == "sglang_num_running_reqs") {
       m.num_running_req = value;
-    } else if (name == "sglang:num_waiting_req" || name == "sglang_num_waiting_req") {
+    } else if (name == "sglang:num_waiting_req" || name == "sglang_num_waiting_req" ||
+               name == "sglang:num_queue_reqs" || name == "sglang_num_queue_reqs") {
       m.num_waiting_req = value;
     } else if (name == "sglang:token_usage" || name == "sglang_token_usage") {
       m.token_usage = value;

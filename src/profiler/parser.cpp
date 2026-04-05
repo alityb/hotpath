@@ -34,6 +34,7 @@ struct KernelEvent {
   std::int64_t end = 0;
   std::string name;
   std::string runtime_name;
+  GridDim grid;
   std::int64_t registers = 0;
   std::int64_t shared_mem = 0;
 };
@@ -75,7 +76,31 @@ bool table_exists(sqlite3* db, const char* table_name) {
   return step_rc == SQLITE_ROW;
 }
 
-std::string build_kernel_events_query(bool has_string_ids, bool has_runtime) {
+bool column_exists(sqlite3* db, const char* table_name, const char* column_name) {
+  sqlite3_stmt* raw_statement = nullptr;
+  const std::string sql = "PRAGMA table_info(" + std::string(table_name) + ")";
+  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw_statement, nullptr) != SQLITE_OK) {
+    throw std::runtime_error(sqlite3_errmsg(db));
+  }
+  SqliteStmtPtr statement(raw_statement, sqlite3_finalize);
+  while (true) {
+    const int step_rc = sqlite3_step(statement.get());
+    if (step_rc == SQLITE_DONE) {
+      break;
+    }
+    if (step_rc != SQLITE_ROW) {
+      throw std::runtime_error(sqlite3_errmsg(db));
+    }
+    if (column_text(statement.get(), 1) == column_name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string build_kernel_events_query(bool has_string_ids,
+                                      bool has_runtime,
+                                      bool has_grid_dims) {
   const std::string kernel_name =
       has_string_ids
           ? "COALESCE(short_names.value, CAST(kernels.shortName AS TEXT))"
@@ -89,8 +114,11 @@ std::string build_kernel_events_query(bool has_string_ids, bool has_runtime) {
 
   std::string query =
       "SELECT kernels.start, kernels.end, " + kernel_name + " AS shortName, " +
-      runtime_name +
-      " AS runtimeName, kernels.registersPerThread, "
+      runtime_name + " AS runtimeName, " +
+      (has_grid_dims
+           ? "COALESCE(kernels.gridX, 1), COALESCE(kernels.gridY, 1), COALESCE(kernels.gridZ, 1), "
+           : "1, 1, 1, ") +
+      "kernels.registersPerThread, "
       "(kernels.staticSharedMemory + kernels.dynamicSharedMemory) AS sharedMem "
       "FROM CUPTI_ACTIVITY_KIND_KERNEL AS kernels ";
 
@@ -245,8 +273,11 @@ std::optional<std::string> category_from_nvtx(
   return best_category;
 }
 
-std::vector<KernelEvent> load_kernel_events(sqlite3* db, bool has_string_ids, bool has_runtime) {
-  const std::string query = build_kernel_events_query(has_string_ids, has_runtime);
+std::vector<KernelEvent> load_kernel_events(sqlite3* db,
+                                            bool has_string_ids,
+                                            bool has_runtime,
+                                            bool has_grid_dims) {
+  const std::string query = build_kernel_events_query(has_string_ids, has_runtime, has_grid_dims);
   sqlite3_stmt* raw_statement = nullptr;
   if (sqlite3_prepare_v2(db, query.c_str(), -1, &raw_statement, nullptr) != SQLITE_OK) {
     throw std::runtime_error(sqlite3_errmsg(db));
@@ -263,14 +294,19 @@ std::vector<KernelEvent> load_kernel_events(sqlite3* db, bool has_string_ids, bo
       throw std::runtime_error(sqlite3_errmsg(db));
     }
 
-    events.push_back(KernelEvent{
-        .start = column_int64(statement.get(), 0),
-        .end = column_int64(statement.get(), 1),
-        .name = column_text(statement.get(), 2),
-        .runtime_name = column_text(statement.get(), 3),
-        .registers = column_int64(statement.get(), 4),
-        .shared_mem = column_int64(statement.get(), 5),
-    });
+      events.push_back(KernelEvent{
+          .start = column_int64(statement.get(), 0),
+          .end = column_int64(statement.get(), 1),
+          .name = column_text(statement.get(), 2),
+          .runtime_name = column_text(statement.get(), 3),
+          .grid = GridDim{
+              .x = static_cast<int>(column_int64(statement.get(), 4)),
+              .y = static_cast<int>(column_int64(statement.get(), 5)),
+              .z = static_cast<int>(column_int64(statement.get(), 6)),
+          },
+          .registers = column_int64(statement.get(), 7),
+          .shared_mem = column_int64(statement.get(), 8),
+      });
   }
   return events;
 }
@@ -308,9 +344,13 @@ std::vector<KernelRecord> parse_nsys_sqlite(const std::filesystem::path& path) {
 
   const bool has_string_ids = table_exists(db.get(), "StringIds");
   const bool has_runtime = table_exists(db.get(), "CUPTI_ACTIVITY_KIND_RUNTIME");
+  const bool has_grid_dims =
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridX") &&
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridY") &&
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridZ");
   const std::vector<NvtxRange> nvtx_ranges = load_nvtx_ranges(db.get(), has_string_ids);
   const std::vector<KernelEvent> kernel_events =
-      load_kernel_events(db.get(), has_string_ids, has_runtime);
+      load_kernel_events(db.get(), has_string_ids, has_runtime, has_grid_dims);
 
   std::size_t nvtx_index = 0;
   std::map<std::string, Aggregate> aggregates;
@@ -362,6 +402,48 @@ std::vector<KernelRecord> parse_nsys_sqlite(const std::filesystem::path& path) {
         return lhs.name < rhs.name;
       });
   return records;
+}
+
+std::vector<KernelTraceEvent> parse_nsys_kernel_trace(const std::filesystem::path& path) {
+  sqlite3* raw_db = nullptr;
+  if (sqlite3_open_v2(path.c_str(), &raw_db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    const std::string message =
+        raw_db == nullptr ? "failed to open sqlite db" : sqlite3_errmsg(raw_db);
+    if (raw_db != nullptr) {
+      sqlite3_close(raw_db);
+    }
+    throw std::runtime_error(message);
+  }
+  SqliteDbPtr db(raw_db, sqlite3_close);
+
+  if (!table_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL")) {
+    return {};
+  }
+
+  const bool has_string_ids = table_exists(db.get(), "StringIds");
+  const bool has_runtime = table_exists(db.get(), "CUPTI_ACTIVITY_KIND_RUNTIME");
+  const bool has_grid_dims =
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridX") &&
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridY") &&
+      column_exists(db.get(), "CUPTI_ACTIVITY_KIND_KERNEL", "gridZ");
+  const std::vector<KernelEvent> events =
+      load_kernel_events(db.get(), has_string_ids, has_runtime, has_grid_dims);
+
+  std::vector<KernelTraceEvent> result;
+  result.reserve(events.size());
+  for (const auto& event : events) {
+    const std::int64_t duration_ns = std::max<std::int64_t>(0, event.end - event.start);
+    result.push_back(KernelTraceEvent{
+        .name = !event.runtime_name.empty() ? event.runtime_name : event.name,
+        .runtime_name = event.runtime_name,
+        .start_us = event.start / 1000,
+        .duration_us = duration_ns / 1000,
+        .grid = event.grid,
+        .registers = event.registers,
+        .shared_mem = event.shared_mem,
+    });
+  }
+  return result;
 }
 
 }  // namespace hotpath::profiler

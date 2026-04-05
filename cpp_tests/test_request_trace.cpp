@@ -46,6 +46,8 @@ int main() {
     // First 40 requests have cached tokens > 0
     trace.cached_tokens = (i < 40) ? (100 + i) : 0;
     trace.status = "ok";
+    trace.prompt_tokens_estimated = (i % 3 == 0);
+    trace.prompt_text = "prompt_" + std::to_string(i);
 
     // Add a couple of events per trace
     trace.events.push_back(hotpath::RequestEvent{
@@ -72,6 +74,8 @@ int main() {
   expect_true(loaded[0].prompt_tokens == 512, "first trace prompt_tokens mismatch");
   expect_true(loaded[0].cached_tokens == 100, "first trace cached_tokens mismatch");
   expect_true(loaded[0].status == "ok", "first trace status mismatch");
+  expect_true(loaded[0].prompt_tokens_estimated, "first trace estimated flag mismatch");
+  expect_true(loaded[0].prompt_text == "prompt_0", "first trace prompt_text mismatch");
   expect_true(loaded[0].events.size() == 2, "first trace should have 2 events");
   expect_true(loaded[0].events[0].event_type == "queue", "first event type mismatch");
 

@@ -67,7 +67,8 @@ std::vector<BenchResult> benchmark_impl(
     const std::string& dtype,
     std::int64_t warmup,
     std::int64_t n_iter,
-    BenchmarkBackend* backend = nullptr);
+    BenchmarkBackend* backend = nullptr,
+    bool flush_cache = false);
 
 std::vector<BenchResult> benchmark_category(
     const std::string& category,
@@ -75,7 +76,8 @@ std::vector<BenchResult> benchmark_category(
     const std::string& dtype,
     std::int64_t warmup,
     std::int64_t n_iter,
-    BenchmarkBackend* backend = nullptr);
+    BenchmarkBackend* backend = nullptr,
+    bool flush_cache = false);
 
 BenchRunOutput parse_bench_json(const std::string& json_text);
 std::string serialize_bench_output_json(const BenchRunOutput& output);

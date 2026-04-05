@@ -91,15 +91,64 @@ std::string sanitize_model_name(std::string value) {
   return value;
 }
 
-std::string vllm_binary() {
-  const char* configured = std::getenv("RLPROF_VLLM_EXECUTABLE");
-  if (configured != nullptr && std::string(configured).size() > 0) {
-    return configured;
+bool command_works(const std::string& command) {
+  return std::system((command + " >/dev/null 2>&1").c_str()) == 0;
+}
+
+std::vector<std::string> vllm_command() {
+  // Check both HOTPATH_ and legacy RLPROF_ env vars
+  const char* configured_vllm = std::getenv("HOTPATH_VLLM_EXECUTABLE");
+  if (!configured_vllm || std::string(configured_vllm).empty()) {
+    configured_vllm = std::getenv("RLPROF_VLLM_EXECUTABLE");
   }
-  if (std::filesystem::exists(".venv/bin/vllm")) {
-    return ".venv/bin/vllm";
+  if (configured_vllm != nullptr && std::string(configured_vllm).size() > 0) {
+    return {configured_vllm};
   }
-  return "vllm";
+
+  const char* configured_python = std::getenv("HOTPATH_PYTHON_EXECUTABLE");
+  if (!configured_python || std::string(configured_python).empty()) {
+    configured_python = std::getenv("RLPROF_PYTHON_EXECUTABLE");
+  }
+  if (configured_python != nullptr && std::string(configured_python).size() > 0) {
+    const std::string python = configured_python;
+    if (command_works(shell_escape(python) +
+                      " -m vllm.entrypoints.openai.api_server --help")) {
+      return {python, "-m", "vllm.entrypoints.openai.api_server"};
+    }
+    // Python exists but vLLM not installed — give a clear error
+    if (std::filesystem::exists(python)) {
+      throw std::runtime_error(
+          "Python at " + python + " does not have vLLM installed.\n"
+          "Install it with: " + python + " -m pip install vllm");
+    }
+    throw std::runtime_error(
+        "Python executable not found: " + python + "\n"
+        "Check HOTPATH_PYTHON_EXECUTABLE is set to a valid path");
+  }
+
+  if (std::filesystem::exists(".venv/bin/vllm") &&
+      command_works(shell_escape(".venv/bin/vllm") + " --version")) {
+    return {".venv/bin/vllm"};
+  }
+  if (std::filesystem::exists(".venv/bin/python") &&
+      command_works(shell_escape(".venv/bin/python") +
+                    " -m vllm.entrypoints.openai.api_server --help")) {
+    return {".venv/bin/python", "-m", "vllm.entrypoints.openai.api_server"};
+  }
+  if (command_works("vllm --version")) {
+    return {"vllm"};
+  }
+  if (command_works("python3 -m vllm.entrypoints.openai.api_server --help")) {
+    return {"python3", "-m", "vllm.entrypoints.openai.api_server"};
+  }
+
+  throw std::runtime_error(
+      "no working vLLM launcher found.\n"
+      "Options:\n"
+      "  1. Set HOTPATH_PYTHON_EXECUTABLE=/path/to/venv/bin/python (must have vLLM installed)\n"
+      "  2. Set HOTPATH_VLLM_EXECUTABLE=/path/to/vllm\n"
+      "  3. Install vLLM globally: pip install vllm\n"
+      "  4. Profile an existing server: hotpath serve-profile --endpoint http://localhost:8000");
 }
 
 std::string make_session_name(const std::string& name) {
@@ -312,22 +361,28 @@ ManagedServerState start_managed_server(const ManagedServerConfig& config) {
   std::vector<std::string> command = {
       "env",
       "VLLM_WORKER_MULTIPROC_METHOD=spawn",
-      "nsys",
-      "launch",
-      "--trace=cuda,nvtx,osrt",
-      "--session-new",
-      session_name,
-      "--wait=all",
-      vllm_binary(),
-      "serve",
-      config.model,
-      "--port",
-      std::to_string(config.port),
-      "--tensor-parallel-size",
-      std::to_string(config.tp),
-      "--max-model-len",
-      std::to_string(config.max_model_len),
   };
+  if (config.debug_logging) {
+    command.push_back("VLLM_LOGGING_LEVEL=DEBUG");
+  }
+  if (config.wrap_with_nsys) {
+    command.push_back("nsys");
+    command.push_back("launch");
+    command.push_back("--trace=cuda,nvtx,osrt");
+    command.push_back("--session-new");
+    command.push_back(session_name);
+    command.push_back("--wait=all");
+  }
+  const auto launcher = vllm_command();
+  command.insert(command.end(), launcher.begin(), launcher.end());
+  command.push_back("serve");
+  command.push_back(config.model);
+  command.push_back("--port");
+  command.push_back(std::to_string(config.port));
+  command.push_back("--tensor-parallel-size");
+  command.push_back(std::to_string(config.tp));
+  command.push_back("--max-model-len");
+  command.push_back(std::to_string(config.max_model_len));
   if (config.trust_remote_code) {
     command.push_back("--trust-remote-code");
   }

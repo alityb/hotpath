@@ -197,6 +197,7 @@ std::string format_optional_metric(
   }
 
   if (metric == "vllm:gpu_cache_usage_perc" ||
+      metric == "vllm:kv_cache_usage_perc" ||
       metric == "vllm:prefix_cache_hit_rate") {
     return format_fixed(*value * 100.0, 1) + "%";
   }
@@ -219,6 +220,7 @@ std::string metric_label(std::string_view metric) {
   static const std::unordered_map<std::string, std::string> labels = {
       {"vllm:num_preemptions_total", "preemptions"},
       {"vllm:gpu_cache_usage_perc", "kv cache utilization"},
+      {"vllm:kv_cache_usage_perc", "kv cache utilization"},
       {"vllm:num_requests_running", "requests running"},
       {"vllm:num_requests_waiting", "requests waiting"},
       {"vllm:avg_generation_throughput_toks_per_s", "generation throughput (tok/s)"},
@@ -227,6 +229,8 @@ std::string metric_label(std::string_view metric) {
       {"vllm:time_per_output_token_seconds_p50", "tpot p50 (ms)"},
       {"vllm:time_per_output_token_seconds_p99", "tpot p99 (ms)"},
       {"vllm:prefix_cache_hit_rate", "prefix cache hit rate"},
+      {"vllm:prefix_cache_hits_total", "prefix cache hits (total)"},
+      {"vllm:prefix_cache_queries_total", "prefix cache queries (total)"},
   };
   const auto it = labels.find(std::string(metric));
   if (it != labels.end()) {
@@ -634,15 +638,14 @@ std::string render_serve_report(const ServeReportData& d) {
     return result;
   };
 
-  o << "hotpath serve-report \xe2\x80\x94 " << d.model_name
-    << " \xe2\x80\x94 " << d.engine
-    << " \xe2\x80\x94 " << d.gpu_info << "\n";
-  o << "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
-       "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
-       "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
-       "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
-       "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
-       "\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\n\n";
+  const std::string header_line =
+      "hotpath serve-report \xe2\x80\x94 " + d.model_name +
+      " \xe2\x80\x94 " + d.engine +
+      " \xe2\x80\x94 " + d.gpu_info;
+  o << header_line << "\n";
+  // Double-line separator matching header width (approx)
+  for (size_t i = 0; i < header_line.size(); ++i) o << "\xe2\x95\x90";
+  o << "\n\n";
 
   o << std::fixed;
 
@@ -650,71 +653,160 @@ std::string render_serve_report(const ServeReportData& d) {
     << "  |  Duration: " << std::setprecision(1) << d.duration_seconds << "s"
     << "  |  Throughput: " << std::setprecision(1) << d.throughput_rps << " req/s\n\n";
 
-  // Latency table
-  const std::string sep = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                          "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                          "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                          "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                          "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                          "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80";
+  // Section separator: 48 thin-line characters
+  std::string sep;
+  for (int i = 0; i < 48; ++i) sep += "\xe2\x94\x80";
+
+  // Use explicit availability flags.  For gpu_phase_available and
+  // cache_hit_rate_available the flag is authoritative — don't infer from
+  // non-zero values, since serve_profiler always writes estimated pct values
+  // regardless of whether real data was collected.
+  // cache_usage_available also checks non-zero values as a fallback for
+  // older databases that predate the flag field.
+  const bool gpu_phase_available = d.gpu_phase_available;
+  const bool cache_usage_available =
+      d.cache_usage_available ||
+      d.avg_cache_usage > 0.0 ||
+      d.peak_cache_usage > 0.0 ||
+      d.evictions > 0;
+  const bool cache_hit_rate_available = d.cache_hit_rate_available;
+  const bool cache_histogram_available =
+      d.cache_histogram_available &&
+      !d.cache_hit_rate_aggregate_only &&
+      std::accumulate(d.cache_hit_rate_histogram.begin(),
+                      d.cache_hit_rate_histogram.end(), 0) > 0;
+  const bool prefix_sharing_available = d.prefix_sharing_available;
 
   o << "Latency (ms)              p50      p90      p99\n";
-  o << sep << sep << "\n";
+  o << sep << "\n";
 
   auto latency_row = [&](const std::string& label, double p50, double p90, double p99) {
+    // p50 < 0 means no data (sentinel -1.0 from empty latency vector)
+    if (p50 < 0.0) {
+      o << std::left << std::setw(24) << label << "-\n";
+      return;
+    }
     o << std::left << std::setw(24) << label
       << std::right << std::setw(8) << std::setprecision(1) << p50
       << std::setw(9) << p90
       << std::setw(9) << p99 << "\n";
   };
 
-  latency_row("Queue wait", d.queue_p50, d.queue_p90, d.queue_p99);
-  latency_row("Prefill", d.prefill_p50, d.prefill_p90, d.prefill_p99);
-  latency_row("Decode (total)", d.decode_total_p50, d.decode_total_p90, d.decode_total_p99);
+  if (d.server_timing_available && d.queue_wait_available) {
+    latency_row("Queue wait", d.queue_p50, d.queue_p90, d.queue_p99);
+    latency_row("Prefill (server)", d.server_prefill_p50, d.server_prefill_p90, d.server_prefill_p99);
+    if (d.server_decode_p50 > 0.0 || d.server_decode_p90 > 0.0 || d.server_decode_p99 > 0.0) {
+      latency_row("Decode (server)", d.server_decode_p50, d.server_decode_p90, d.server_decode_p99);
+    }
+  } else {
+    o << "Queue wait               not available (requires vLLM DEBUG logs and --server-log)\n";
+  }
+  // "TTFB" (time to first byte) = time to first HTTP response header — includes network
+  // overhead before any token data. "TTFT (server)" from Prometheus histogram is the
+  // authoritative first-token latency when available.
+  latency_row("TTFB (client)", d.prefill_p50, d.prefill_p90, d.prefill_p99);
+  if (d.server_ttft_mean_ms > 0.0) {
+    o << std::left << std::setw(24) << "TTFT (server, mean)"
+      << std::right << std::setw(8) << std::setprecision(1) << d.server_ttft_mean_ms
+      << std::setw(9) << "-"
+      << std::setw(9) << "-" << "\n";
+  }
+  latency_row("Generation (client)", d.decode_total_p50, d.decode_total_p90, d.decode_total_p99);
   latency_row("Decode (per-token)", d.decode_per_token_p50, d.decode_per_token_p90, d.decode_per_token_p99);
   latency_row("End-to-end", d.e2e_p50, d.e2e_p90, d.e2e_p99);
+  if (d.server_timing_available &&
+      d.server_timing_match_method == "timestamp" &&
+      d.server_timing_remote_correlation) {
+    o << "Note: Server timing correlated by timestamp (±50ms accuracy)\n";
+  }
 
-  o << "\nGPU Phase Breakdown\n" << sep << sep << "\n";
-  o << std::left << std::setw(24) << "Prefill compute"
-    << std::right << std::setw(6) << std::setprecision(1) << d.prefill_compute_pct << "%   "
-    << bar(d.prefill_compute_pct) << "\n";
-  o << std::left << std::setw(24) << "Decode compute"
-    << std::right << std::setw(6) << std::setprecision(1) << d.decode_compute_pct << "%   "
-    << bar(d.decode_compute_pct) << "\n";
-  o << std::left << std::setw(24) << "Other / idle"
-    << std::right << std::setw(6) << std::setprecision(1) << d.other_idle_pct << "%   "
-    << bar(d.other_idle_pct) << "\n";
+  if (gpu_phase_available) {
+    o << "\nGPU Phase Breakdown\n" << sep << "\n";
+    o << std::left << std::setw(24) << "Prefill compute"
+      << std::right << std::setw(6) << std::setprecision(1) << d.prefill_compute_pct << "%   "
+      << bar(d.prefill_compute_pct) << "\n";
+    o << std::left << std::setw(24) << "Decode compute"
+      << std::right << std::setw(6) << std::setprecision(1) << d.decode_compute_pct << "%   "
+      << bar(d.decode_compute_pct) << "\n";
+    o << std::left << std::setw(24) << "Other / idle"
+      << std::right << std::setw(6) << std::setprecision(1) << d.other_idle_pct << "%   "
+      << bar(d.other_idle_pct) << "\n";
+  } else {
+    o << "\nGPU Phase Breakdown: not available (requires --nsys flag for kernel-level tracing)\n";
+  }
 
-  o << "\nKV Cache\n" << sep << sep << "\n";
-  o << std::left << std::setw(24) << "Hit rate"
-    << std::right << std::setw(6) << std::setprecision(1) << d.cache_hit_rate * 100.0 << "%\n";
-  o << std::left << std::setw(24) << "Avg usage"
-    << std::right << std::setw(6) << std::setprecision(1) << d.avg_cache_usage << "%\n";
-  o << std::left << std::setw(24) << "Evictions"
-    << std::right << std::setw(6) << d.evictions << "\n";
+  if (!cache_hit_rate_available && !cache_usage_available) {
+    o << "\nKV Cache: not available (server-side cache stats not collected)\n";
+  } else {
+    o << "\nKV Cache\n" << sep << "\n";
+    if (cache_hit_rate_available) {
+      std::string label = "Hit rate";
+      if (d.cache_hit_rate_aggregate_only) {
+        label += " (aggregate)";
+      }
+      o << std::left << std::setw(24) << label
+        << std::right << std::setw(6) << std::setprecision(1) << d.cache_hit_rate * 100.0 << "%\n";
+      if (d.cache_hit_rate_aggregate_only) {
+        o << "  aggregate from server logs, not per-request\n";
+      }
+    } else {
+      o << "Hit rate                 not available (requires per-request server-side cache stats)\n";
+    }
+    if (cache_usage_available) {
+      o << std::left << std::setw(24) << "Avg usage"
+        << std::right << std::setw(6) << std::setprecision(1) << d.avg_cache_usage << "%\n";
+      o << std::left << std::setw(24) << "Peak usage"
+        << std::right << std::setw(6) << std::setprecision(1) << d.peak_cache_usage << "%\n";
+      o << std::left << std::setw(24) << "Evictions"
+        << std::right << std::setw(6) << d.evictions << "\n";
+    }
+    if (cache_histogram_available) {
+      o << std::left << std::setw(24) << "Hit histogram"
+        << "[0% "
+        << d.cache_hit_rate_histogram[0] << ", 1-25% "
+        << d.cache_hit_rate_histogram[1] << ", 25-50% "
+        << d.cache_hit_rate_histogram[2] << ", 50-75% "
+        << d.cache_hit_rate_histogram[3] << ", 75-100% "
+        << d.cache_hit_rate_histogram[4] << "]\n";
+    }
+  }
 
-  o << "\nPrefix Sharing\n" << sep << sep << "\n";
-  o << std::left << std::setw(24) << "Unique prefixes"
-    << std::right << std::setw(6) << d.unique_prefixes << "\n";
-  o << std::left << std::setw(24) << "Cacheable tokens"
-    << std::right << std::setw(6) << std::setprecision(1) << d.cacheable_tokens_pct << "%\n";
+  if (!prefix_sharing_available) {
+    o << "\nPrefix Sharing: not available (no prompt text captured — replay traffic must include prompt content)\n";
+  } else {
+    o << "\nPrefix Sharing\n" << sep << "\n";
+    o << std::left << std::setw(24) << "Unique prefixes"
+      << std::right << std::setw(6) << d.unique_prefixes << "\n";
+    o << std::left << std::setw(24) << "Cacheable tokens"
+      << std::right << std::setw(6) << std::setprecision(1) << d.cacheable_tokens_pct << "%\n";
+  }
 
-  o << "\nDisaggregation Advisor\n" << sep << sep << "\n";
+  o << "\nDisaggregation Advisor\n" << sep << "\n";
   if (d.should_disaggregate) {
     o << std::left << std::setw(24) << "Recommendation:" << "DISAGGREGATE\n";
     o << std::left << std::setw(24) << "Optimal P:D ratio:"
       << d.optimal_p << ":" << d.optimal_d << "\n";
     o << std::left << std::setw(24) << "Projected throughput:"
-      << "+" << static_cast<int>(d.projected_throughput_pct) << "% ("
+      << "+" << std::lround(d.projected_throughput_pct) << "% ("
       << std::setprecision(1) << d.projected_throughput_rps << " req/s)\n";
+    // mono side: use measured server prefill p99 when available, otherwise fall back to model estimate
+    const double mono_ttft_display = (d.server_timing_available && d.server_prefill_p99 > 0.0)
+        ? d.server_prefill_p99 : d.mono_p99_ttft;
+    const std::string mono_ttft_suffix = (d.server_timing_available && d.server_prefill_p99 > 0.0)
+        ? "ms (measured)" : "ms (est.)";
     o << std::left << std::setw(24) << "Projected p99 TTFT:"
-      << static_cast<int>(d.mono_p99_ttft) << "ms -> "
-      << static_cast<int>(d.disagg_p99_ttft) << "ms\n";
+      << std::lround(mono_ttft_display) << mono_ttft_suffix << " -> "
+      << std::lround(d.disagg_p99_ttft) << "ms (est.)\n";
     o << std::left << std::setw(24) << "Min network bandwidth:"
       << static_cast<int>(d.min_bandwidth_gbps) << " Gbps\n";
   } else {
     o << std::left << std::setw(24) << "Recommendation:" << "MONOLITHIC\n";
   }
+  if (!d.advisor_caveat.empty()) {
+    o << "\n" << d.advisor_caveat << "\n";
+  }
+
+  o << "\n";
 
   return o.str();
 }

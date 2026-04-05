@@ -1,25 +1,27 @@
-INFO 01-15 14:23:01.000000 api_server.py:100 Added request cmpl-abc001 with prompt_token=512
-INFO 01-15 14:23:01.100000 scheduler.py:200 Running: 1 requests, cmpl-abc001
-DEBUG 01-15 14:23:01.200000 worker.py:300 Prefill cmpl-abc001 token=512 done
-INFO 01-15 14:23:01.500000 engine.py:400 Finished request cmpl-abc001 output_token=128
+INFO 04-04 14:23:01.000000 api_server.py:100 Added request cmpl-019001 prompt_tokens=512
+DEBUG 04-04 14:23:01.050000 scheduler.py:200 Running: [cmpl-019001]
+DEBUG 04-04 14:23:01.100000 model_runner.py:300 Prefill done for requests [cmpl-019001] token=512
+INFO 04-04 14:23:01.500000 engine.py:400 Finished request cmpl-019001 output_tokens=128
 
-INFO 01-15 14:23:02.000000 api_server.py:100 Added request cmpl-abc002 with prompt_token=256
-INFO 01-15 14:23:02.050000 scheduler.py:200 Running: 2 requests, cmpl-abc002
-DEBUG 01-15 14:23:02.150000 worker.py:300 Prefill cmpl-abc002 token=256 done
-INFO 01-15 14:23:02.600000 engine.py:400 Finished request cmpl-abc002 output_token=64
+INFO 04-04 14:23:02.000000 api_server.py:100 Added request cmpl-019002 prompt_tokens=256
+INFO 04-04 14:23:02.020000 api_server.py:100 Added request cmpl-019003 prompt_tokens=1024
+DEBUG 04-04 14:23:02.025000 scheduler.py:200 Running: [cmpl-019002, cmpl-019003]
+DEBUG 04-04 14:23:02.100000 model_runner.py:300 Prefill complete for requests [cmpl-019002] token=256
+INFO 04-04 14:23:02.550000 engine.py:400 Finished request cmpl-019002 output_tokens=64
 
-INFO 01-15 14:23:03.000000 api_server.py:100 Added request cmpl-abc003 with prompt_token=1024
-INFO 01-15 14:23:03.200000 scheduler.py:200 Running: 1 requests, cmpl-abc003
-DEBUG 01-15 14:23:03.200000 worker.py:310 prefix_cache cmpl-abc003 cached=200
-DEBUG 01-15 14:23:03.500000 worker.py:300 Prefill cmpl-abc003 token=1024 done
-INFO 01-15 14:23:04.200000 engine.py:400 Finished request cmpl-abc003 output_token=256
+DEBUG 04-04 14:23:03.040000 scheduler.py:200 Running: [cmpl-019003]
+DEBUG 04-04 14:23:03.060000 worker.py:310 prefix_cache cmpl-019003 cached=200
+DEBUG 04-04 14:23:03.300000 model_runner.py:300 Prefill finished for requests [cmpl-019003] token=1024
+INFO 04-04 14:23:04.100000 engine.py:400 Finished request cmpl-019003 output_tokens=256
 
-INFO 01-15 14:23:05.000000 api_server.py:100 Added request cmpl-abc004 with prompt_token=128
-INFO 01-15 14:23:05.010000 scheduler.py:200 Running: 3 requests, cmpl-abc004
-DEBUG 01-15 14:23:05.030000 worker.py:300 Prefill cmpl-abc004 token=128 done
-INFO 01-15 14:23:05.100000 engine.py:400 Finished request cmpl-abc004 output_token=32
+INFO 04-04 14:23:05.000000 api_server.py:100 Added request cmpl-019004 prompt_tokens=128
+DEBUG 04-04 14:23:05.010000 scheduler.py:200 Running: [cmpl-019004]
+DEBUG 04-04 14:23:05.020000 model_runner.py:300 Prefill done for requests [cmpl-019004] token=128
+INFO 04-04 14:23:05.090000 engine.py:400 Finished request cmpl-019004 output_tokens=32
 
-INFO 01-15 14:23:06.000000 api_server.py:100 Added request cmpl-abc005 with prompt_token=2048
-INFO 01-15 14:23:06.300000 scheduler.py:200 Running: 1 requests, cmpl-abc005
-DEBUG 01-15 14:23:06.800000 worker.py:300 Prefill cmpl-abc005 token=2048 done
-INFO 01-15 14:23:08.000000 engine.py:400 Finished request cmpl-abc005 output_token=512
+INFO 04-04 14:23:06.000000 api_server.py:100 Added request chatcmpl-019005 prompt_tokens=2048
+DEBUG 04-04 14:23:06.120000 scheduler.py:200 Running: [chatcmpl-019005]
+DEBUG 04-04 14:23:06.500000 model_runner.py:300 Prefill complete for requests [chatcmpl-019005] token=2048
+INFO 04-04 14:23:08.000000 engine.py:400 Finished request chatcmpl-019005 output_tokens=512
+INFO 04-04 14:23:08.100000 scheduler.py:500 Prefix cache hit rate: 41.2%
+DEBUG 04-04 14:23:08.200000 compile.py:77 loaded hash e6e225a1e5d19659baa2744480c86579

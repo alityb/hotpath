@@ -69,6 +69,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--batch-ms-target", type=float, default=10.0)
     parser.add_argument("--cuda-graph-replay", choices=("off", "on"), default="off")
+    parser.add_argument("--flush-l2", action="store_true",
+                        help="flush GPU L2 cache before each measured kernel launch "
+                             "(produces cold-cache numbers representative of real workloads)")
     return parser.parse_args()
 
 
@@ -146,6 +149,27 @@ def query_gpu_snapshot() -> GpuSnapshot | None:
     )
 
 
+_l2_flush_buf: torch.Tensor | None = None
+
+
+def _get_l2_flush_buf() -> torch.Tensor:
+    """Allocate a buffer >= L2 cache size. Writing to it evicts all L2 lines."""
+    global _l2_flush_buf
+    if _l2_flush_buf is None:
+        l2_bytes = torch.cuda.get_device_properties(0).l2CacheSize
+        # Minimum 8 MB even if query returns 0 (some drivers underreport)
+        buf_bytes = max(l2_bytes, 8 * 1024 * 1024)
+        _l2_flush_buf = torch.empty(buf_bytes // 4, dtype=torch.float32, device="cuda")
+    return _l2_flush_buf
+
+
+def flush_l2_cache() -> None:
+    """Write to a buffer larger than L2 to evict all cached lines."""
+    buf = _get_l2_flush_buf()
+    buf.zero_()
+    torch.cuda.synchronize()
+
+
 def measure_block_ms(fn, launches: int, start: torch.cuda.Event, end: torch.cuda.Event) -> float:
     start.record()
     for _ in range(launches):
@@ -171,7 +195,8 @@ def determine_batch_invocations(
     return max(1, min(4096, int(math.ceil(target_ms / representative_ms))))
 
 
-def measure_once(fn, warmup: int, n_iter: int, batch_invocations: int) -> list[float]:
+def measure_once(fn, warmup: int, n_iter: int, batch_invocations: int,
+                  flush_l2: bool = False) -> list[float]:
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -180,6 +205,8 @@ def measure_once(fn, warmup: int, n_iter: int, batch_invocations: int) -> list[f
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     for _ in range(n_iter):
+        if flush_l2:
+            flush_l2_cache()
         elapsed_ms = measure_block_ms(fn, batch_invocations, start, end)
         times.append(elapsed_ms / batch_invocations)
     return times
@@ -264,6 +291,7 @@ def benchmark(
     repeats: int,
     batch_ms_target: float,
     cuda_graph_replay: str,
+    flush_l2: bool = False,
 ) -> BenchResult:
     dtype = dtype_from_name(dtype_name)
     validation_passed, validation_max_abs_error = validate_implementation(
@@ -300,7 +328,8 @@ def benchmark(
             timed_fn, batch_ms_target, start, end
         )
         batch_invocations = max(batch_invocations, current_batch_invocations)
-        times = measure_once(timed_fn, warmup, n_iter, current_batch_invocations)
+        times = measure_once(timed_fn, warmup, n_iter, current_batch_invocations,
+                             flush_l2=flush_l2)
         all_times.extend(times)
         repeat_means.append(sum(times) / len(times))
         snapshot = query_gpu_snapshot()
@@ -470,6 +499,7 @@ def main() -> None:
                         repeats=args.repeats,
                         batch_ms_target=args.batch_ms_target,
                         cuda_graph_replay=args.cuda_graph_replay,
+                        flush_l2=args.flush_l2,
                     )
                 )
 

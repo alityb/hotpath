@@ -59,13 +59,17 @@ CREATE TABLE IF NOT EXISTS request_traces (
     queue_start_us INTEGER,
     prefill_start_us INTEGER,
     prefill_end_us INTEGER,
+    server_last_token_us INTEGER,
     first_token_us INTEGER,
     last_token_us INTEGER,
     completion_us INTEGER,
     prompt_tokens INTEGER,
     output_tokens INTEGER,
     cached_tokens INTEGER,
-    status TEXT
+    status TEXT,
+    server_timing_available INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens_estimated INTEGER NOT NULL DEFAULT 0,
+    prompt_text TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS request_events (
@@ -75,6 +79,11 @@ CREATE TABLE IF NOT EXISTS request_events (
     timestamp_us INTEGER NOT NULL,
     detail TEXT,
     FOREIGN KEY (trace_id) REFERENCES request_traces(id)
+);
+
+CREATE TABLE IF NOT EXISTS serve_analysis (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 )SQL";
 
@@ -167,6 +176,30 @@ std::filesystem::path init_db(const std::filesystem::path& path) {
     exec_sql(
         db.get(),
         "ALTER TABLE vllm_metrics ADD COLUMN source TEXT NOT NULL DEFAULT ''");
+  }
+  if (!table_has_column(db.get(), "request_traces", "prompt_tokens_estimated")) {
+    exec_sql(
+        db.get(),
+        "ALTER TABLE request_traces "
+        "ADD COLUMN prompt_tokens_estimated INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!table_has_column(db.get(), "request_traces", "prompt_text")) {
+    exec_sql(
+        db.get(),
+        "ALTER TABLE request_traces "
+        "ADD COLUMN prompt_text TEXT NOT NULL DEFAULT ''");
+  }
+  if (!table_has_column(db.get(), "request_traces", "server_last_token_us")) {
+    exec_sql(
+        db.get(),
+        "ALTER TABLE request_traces "
+        "ADD COLUMN server_last_token_us INTEGER");
+  }
+  if (!table_has_column(db.get(), "request_traces", "server_timing_available")) {
+    exec_sql(
+        db.get(),
+        "ALTER TABLE request_traces "
+        "ADD COLUMN server_timing_available INTEGER NOT NULL DEFAULT 0");
   }
   return path;
 }
@@ -403,22 +436,27 @@ int64_t insert_request_trace(const std::filesystem::path& db_path,
       db.get(),
       "INSERT INTO request_traces "
       "(profile_id, request_id, arrival_us, queue_start_us, prefill_start_us, "
-      "prefill_end_us, first_token_us, last_token_us, completion_us, "
-      "prompt_tokens, output_tokens, cached_tokens, status) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      "prefill_end_us, server_last_token_us, first_token_us, last_token_us, completion_us, "
+      "prompt_tokens, output_tokens, cached_tokens, status, server_timing_available, "
+      "prompt_tokens_estimated, prompt_text) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   sqlite3_bind_int64(stmt.get(), 1, profile_id);
   bind_text(stmt.get(), 2, trace.request_id);
   sqlite3_bind_int64(stmt.get(), 3, trace.arrival_us);
   sqlite3_bind_int64(stmt.get(), 4, trace.queue_start_us);
   sqlite3_bind_int64(stmt.get(), 5, trace.prefill_start_us);
   sqlite3_bind_int64(stmt.get(), 6, trace.prefill_end_us);
-  sqlite3_bind_int64(stmt.get(), 7, trace.first_token_us);
-  sqlite3_bind_int64(stmt.get(), 8, trace.last_token_us);
-  sqlite3_bind_int64(stmt.get(), 9, trace.completion_us);
-  sqlite3_bind_int(stmt.get(), 10, trace.prompt_tokens);
-  sqlite3_bind_int(stmt.get(), 11, trace.output_tokens);
-  sqlite3_bind_int(stmt.get(), 12, trace.cached_tokens);
-  bind_text(stmt.get(), 13, trace.status);
+  sqlite3_bind_int64(stmt.get(), 7, trace.server_last_token_us);
+  sqlite3_bind_int64(stmt.get(), 8, trace.first_token_us);
+  sqlite3_bind_int64(stmt.get(), 9, trace.last_token_us);
+  sqlite3_bind_int64(stmt.get(), 10, trace.completion_us);
+  sqlite3_bind_int(stmt.get(), 11, trace.prompt_tokens);
+  sqlite3_bind_int(stmt.get(), 12, trace.output_tokens);
+  sqlite3_bind_int(stmt.get(), 13, trace.cached_tokens);
+  bind_text(stmt.get(), 14, trace.status);
+  sqlite3_bind_int(stmt.get(), 15, trace.server_timing_available ? 1 : 0);
+  sqlite3_bind_int(stmt.get(), 16, trace.prompt_tokens_estimated ? 1 : 0);
+  bind_text(stmt.get(), 17, trace.prompt_text);
   if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
     throw std::runtime_error(sqlite3_errmsg(db.get()));
   }
@@ -459,13 +497,17 @@ std::vector<RequestTrace> load_traces_from_stmt(sqlite3* db, sqlite3_stmt* stmt)
     t.queue_start_us = sqlite3_column_int64(stmt, 3);
     t.prefill_start_us = sqlite3_column_int64(stmt, 4);
     t.prefill_end_us = sqlite3_column_int64(stmt, 5);
-    t.first_token_us = sqlite3_column_int64(stmt, 6);
-    t.last_token_us = sqlite3_column_int64(stmt, 7);
-    t.completion_us = sqlite3_column_int64(stmt, 8);
-    t.prompt_tokens = sqlite3_column_int(stmt, 9);
-    t.output_tokens = sqlite3_column_int(stmt, 10);
-    t.cached_tokens = sqlite3_column_int(stmt, 11);
-    t.status = column_text(stmt, 12);
+    t.server_last_token_us = sqlite3_column_int64(stmt, 6);
+    t.first_token_us = sqlite3_column_int64(stmt, 7);
+    t.last_token_us = sqlite3_column_int64(stmt, 8);
+    t.completion_us = sqlite3_column_int64(stmt, 9);
+    t.prompt_tokens = sqlite3_column_int(stmt, 10);
+    t.output_tokens = sqlite3_column_int(stmt, 11);
+    t.cached_tokens = sqlite3_column_int(stmt, 12);
+    t.status = column_text(stmt, 13);
+    t.server_timing_available = sqlite3_column_int(stmt, 14) != 0;
+    t.prompt_tokens_estimated = sqlite3_column_int(stmt, 15) != 0;
+    t.prompt_text = column_text(stmt, 16);
     trace_index[id] = traces.size();
     traces.push_back(std::move(t));
   }
@@ -496,12 +538,14 @@ std::vector<RequestTrace> load_traces_from_stmt(sqlite3* db, sqlite3_stmt* stmt)
 
 std::vector<RequestTrace> load_request_traces(const std::filesystem::path& db_path,
                                               int64_t profile_id) {
+  init_db(db_path);
   SqliteDbPtr db = open_db(db_path);
   auto stmt = prepare(
       db.get(),
       "SELECT id, request_id, arrival_us, queue_start_us, prefill_start_us, "
-      "prefill_end_us, first_token_us, last_token_us, completion_us, "
-      "prompt_tokens, output_tokens, cached_tokens, status "
+      "prefill_end_us, server_last_token_us, first_token_us, last_token_us, completion_us, "
+      "prompt_tokens, output_tokens, cached_tokens, status, server_timing_available, "
+      "prompt_tokens_estimated, prompt_text "
       "FROM request_traces WHERE profile_id = ? ORDER BY arrival_us");
   sqlite3_bind_int64(stmt.get(), 1, profile_id);
   return load_traces_from_stmt(db.get(), stmt.get());
@@ -510,12 +554,14 @@ std::vector<RequestTrace> load_request_traces(const std::filesystem::path& db_pa
 std::vector<RequestTrace> query_traces_prefill_gt(const std::filesystem::path& db_path,
                                                   int64_t profile_id,
                                                   int64_t min_prefill_us) {
+  init_db(db_path);
   SqliteDbPtr db = open_db(db_path);
   auto stmt = prepare(
       db.get(),
       "SELECT id, request_id, arrival_us, queue_start_us, prefill_start_us, "
-      "prefill_end_us, first_token_us, last_token_us, completion_us, "
-      "prompt_tokens, output_tokens, cached_tokens, status "
+      "prefill_end_us, server_last_token_us, first_token_us, last_token_us, completion_us, "
+      "prompt_tokens, output_tokens, cached_tokens, status, server_timing_available, "
+      "prompt_tokens_estimated, prompt_text "
       "FROM request_traces "
       "WHERE profile_id = ? AND (prefill_end_us - prefill_start_us) > ? "
       "ORDER BY arrival_us");
@@ -527,18 +573,56 @@ std::vector<RequestTrace> query_traces_prefill_gt(const std::filesystem::path& d
 std::vector<RequestTrace> query_traces_cached_gt(const std::filesystem::path& db_path,
                                                  int64_t profile_id,
                                                  int min_cached_tokens) {
+  init_db(db_path);
   SqliteDbPtr db = open_db(db_path);
   auto stmt = prepare(
       db.get(),
       "SELECT id, request_id, arrival_us, queue_start_us, prefill_start_us, "
-      "prefill_end_us, first_token_us, last_token_us, completion_us, "
-      "prompt_tokens, output_tokens, cached_tokens, status "
+      "prefill_end_us, server_last_token_us, first_token_us, last_token_us, completion_us, "
+      "prompt_tokens, output_tokens, cached_tokens, status, server_timing_available, "
+      "prompt_tokens_estimated, prompt_text "
       "FROM request_traces "
       "WHERE profile_id = ? AND cached_tokens > ? "
       "ORDER BY arrival_us");
   sqlite3_bind_int64(stmt.get(), 1, profile_id);
   sqlite3_bind_int(stmt.get(), 2, min_cached_tokens);
   return load_traces_from_stmt(db.get(), stmt.get());
+}
+
+void save_serve_analysis(const std::filesystem::path& db_path,
+                         const std::map<std::string, std::string>& kv) {
+  init_db(db_path);
+  SqliteDbPtr db = open_db(db_path);
+  exec_sql(db.get(), "BEGIN");
+  exec_sql(db.get(), "DELETE FROM serve_analysis");
+  auto stmt = prepare(db.get(),
+      "INSERT OR REPLACE INTO serve_analysis (key, value) VALUES (?, ?)");
+  for (const auto& [key, value] : kv) {
+    sqlite3_reset(stmt.get());
+    sqlite3_clear_bindings(stmt.get());
+    bind_text(stmt.get(), 1, key);
+    bind_text(stmt.get(), 2, value);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+      throw std::runtime_error(sqlite3_errmsg(db.get()));
+    }
+  }
+  exec_sql(db.get(), "COMMIT");
+}
+
+std::map<std::string, std::string> load_serve_analysis(const std::filesystem::path& db_path) {
+  SqliteDbPtr db = open_db(db_path);
+  // Check table exists
+  auto check = prepare(db.get(),
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='serve_analysis'");
+  if (sqlite3_step(check.get()) != SQLITE_ROW) {
+    return {};
+  }
+  auto stmt = prepare(db.get(), "SELECT key, value FROM serve_analysis ORDER BY key");
+  std::map<std::string, std::string> result;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    result[column_text(stmt.get(), 0)] = column_text(stmt.get(), 1);
+  }
+  return result;
 }
 
 }  // namespace hotpath

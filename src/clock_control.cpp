@@ -129,17 +129,32 @@ std::string unlock_failure_message() {
 
 ClockPolicyInfo parse_clock_policy_output(
     const std::string& nvidia_smi_report,
-    const std::string& max_sm_clock_output) {
+    const std::string& max_sm_clock_output,
+    const std::string& current_sm_clock_output) {
   ClockPolicyInfo info;
   info.query_ok = true;
   info.max_sm_clock_mhz = parse_mhz_value(max_sm_clock_output);
+  info.current_sm_clock_mhz = parse_mhz_value(current_sm_clock_output);
   info.locked_sm_clock_mhz = extract_locked_sm_clock_mhz(nvidia_smi_report);
 
   const auto apps_setting =
       extract_report_value(nvidia_smi_report, "Applications Clocks Setting");
   info.applications_clocks_active =
       apps_setting.has_value() && *apps_setting == "Active";
-  info.gpu_clocks_locked = info.locked_sm_clock_mhz.has_value();
+
+  if (info.locked_sm_clock_mhz.has_value()) {
+    // Explicit "GPU Locked Clocks" section found in nvidia-smi -q output.
+    info.gpu_clocks_locked = true;
+  } else if (info.current_sm_clock_mhz.has_value() &&
+             info.max_sm_clock_mhz.has_value() &&
+             *info.current_sm_clock_mhz == *info.max_sm_clock_mhz) {
+    // Fallback for GPUs that don't emit a "Locked Clocks" section (e.g.
+    // A10G on AWS): if the current SM clock equals the hardware max, the
+    // GPU is pinned at max frequency — treat as locked.
+    info.gpu_clocks_locked = true;
+    info.locked_sm_clock_mhz = info.current_sm_clock_mhz;
+  }
+
   info.lock_status = info.gpu_clocks_locked ? "locked" : "unlocked";
   return info;
 }
@@ -149,7 +164,9 @@ ClockPolicyInfo query_clock_policy() {
     return parse_clock_policy_output(
         run_command_capture("nvidia-smi -q"),
         run_command_capture(
-            "nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits | head -n 1"));
+            "nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits | head -n 1"),
+        run_command_capture(
+            "nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits | head -n 1"));
   } catch (const std::exception&) {
     return ClockPolicyInfo{};
   }

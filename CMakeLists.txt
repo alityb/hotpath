@@ -43,6 +43,7 @@ add_library(
   src/advisor/workload_classifier.cpp
   src/advisor/disagg_model.cpp
   src/advisor/recommender.cpp
+  src/advisor/kv_config.cpp
   src/serving/serve_profiler.cpp
   src/serving/traffic_replayer.cpp
   src/profiler/sglang_metrics.cpp
@@ -312,6 +313,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_otlp_export PRIVATE hotpath_core)
   add_test(NAME test_otlp_export COMMAND test_otlp_export)
+
+  add_executable(
+    test_audit
+    cpp_tests/test_audit.cpp
+  )
+  target_link_libraries(test_audit PRIVATE hotpath_core)
+  add_test(NAME test_audit COMMAND test_audit)
 
   add_executable(
     test_interactive

@@ -53,7 +53,7 @@ BatchAnalysis analyze_batches(const std::vector<MetricSnapshot>& snapshots) {
   result.avg_queue_depth = queue_sum / static_cast<double>(queue_depths.size());
   result.p99_queue_depth = percentile(queue_depths, 99.0);
 
-  result.total_preemptions = static_cast<int>(max_preemption - min_preemption);
+  result.total_preemptions = static_cast<int>(std::max(0.0, max_preemption - min_preemption));
 
   const double cache_sum = std::accumulate(cache_usages.begin(), cache_usages.end(), 0.0);
   result.avg_cache_usage = cache_sum / static_cast<double>(cache_usages.size());

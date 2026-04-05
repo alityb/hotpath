@@ -1,0 +1,10 @@
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Summarize why GPU profiling sometimes needs warmup iterations before measurement.\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Explain why prompt caching helps repeated chat requests with a shared system prompt.\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Describe the difference between TTFT and end-to-end latency for an LLM API.\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Give two reasons a local benchmark can differ from production serving latency.\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: What does queue wait mean in a batched LLM serving system?\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Why can prefix sharing reduce prefill cost across similar requests?\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Explain why GPU phase breakdown needs kernel-level tracing.\nAssistant:","max_tokens":48}
+{"prompt":"System: You are a concise assistant for infrastructure debugging. Always answer in short bullet points.\nUser: Give a short explanation of why cache hit rate matters for serving throughput.\nAssistant:","max_tokens":48}
+{"prompt":"Write a haiku about debugging a stubborn CUDA kernel launch failure in the middle of the night.","max_tokens":40}
+{"prompt":"List three practical tips for reducing noisy benchmark variance when testing a small language model server locally.","max_tokens":40}
