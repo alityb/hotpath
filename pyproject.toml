@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "hotpath"
-version = "0.2.0"
+version = "0.2.1"
 description = "Profile vLLM inference under RL-style rollout workloads."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -77,7 +77,7 @@ wheel.packages = ["hotpath_py"]
 [tool.cibuildwheel]
 build = ["cp310-manylinux_x86_64", "cp311-manylinux_x86_64", "cp312-manylinux_x86_64"]
 skip = ["pp*"]
-test-command = "python -c \"import hotpath_py; print(hotpath_py.__version__)\""
+test-command = "python -c \"import hotpath_py; print(hotpath_py.__version__)\" && hotpath --help && printf 'q\\n' | hotpath"
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "manylinux_2_28"

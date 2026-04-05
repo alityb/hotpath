@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.1 - 2026-04-05
+
+Packaging and interactive TUI hardening.
+
+Highlights:
+
+- release workflow now installs the built wheel artifacts on fresh Python 3.10, 3.11, and 3.12 runners and blocks PyPI publish unless `hotpath --help`, `hotpath`, and `hotpath version` all succeed from the installed entrypoint
+- `cibuildwheel` now smoke-tests the installed `hotpath` CLI instead of only importing the Python package, which would have caught the broken packaged ELF before release
+- interactive arrow-key menus now clip rendered lines to terminal width, avoiding wrapped redraw corruption in Ghostty and other narrow terminals
+
 ## v0.2.0 - 2026-04-05
 
 Serving analysis, interactive TUI, and numerical hardening.

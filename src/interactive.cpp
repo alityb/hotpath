@@ -73,6 +73,27 @@ const char* color_code(const char* code) {
   return use_color() ? code : "";
 }
 
+int terminal_columns() {
+  struct winsize ws{};
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+    return ws.ws_col;
+  }
+  return 80;
+}
+
+std::string truncate_display_text(const std::string& text, int max_columns) {
+  if (max_columns <= 0) {
+    return "";
+  }
+  if (static_cast<int>(text.size()) <= max_columns) {
+    return text;
+  }
+  if (max_columns <= 3) {
+    return text.substr(0, static_cast<std::size_t>(max_columns));
+  }
+  return text.substr(0, static_cast<std::size_t>(max_columns - 3)) + "...";
+}
+
 std::filesystem::path defaults_path() {
   const char* explicit_path = std::getenv("RLPROF_DEFAULTS_PATH");
   if (explicit_path != nullptr && std::string(explicit_path).size() > 0) {
@@ -297,6 +318,7 @@ std::optional<int> prompt_choice(
   struct winsize ws{};
   ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
   const int term_rows = (ws.ws_row > 6) ? ws.ws_row - 6 : 8;
+  const int term_cols = terminal_columns();
   const int n = static_cast<int>(options.size());
   const int max_vis = std::min(n, std::max(4, term_rows));
 
@@ -310,19 +332,21 @@ std::optional<int> prompt_choice(
     if (selected >= vp_start + max_vis) vp_start = selected - max_vis + 1;
 
     rendered_lines = 0;
+    const std::string header =
+        truncate_display_text(label + "  (arrows, enter, q)", std::max(1, term_cols - 4));
     std::cout << "\r  " << color_code(CYAN) << "? " << color_code(RESET)
-              << color_code(BOLD) << label << color_code(RESET)
-              << "  " << color_code(DIM) << "(↑↓ · enter · q)"
-              << color_code(RESET) << "\033[K\n";
+              << color_code(BOLD) << header << color_code(RESET) << "\033[K\n";
     ++rendered_lines;
 
     for (int i = vp_start; i < vp_start + max_vis; ++i) {
+      const std::string option =
+          truncate_display_text(options[static_cast<std::size_t>(i)], std::max(1, term_cols - 4));
       if (i == selected) {
         std::cout << "\r  " << color_code(CYAN) << "> " << color_code(RESET)
-                  << options[static_cast<std::size_t>(i)] << "\033[K\n";
+                  << option << "\033[K\n";
       } else {
         std::cout << "\r    " << color_code(DIM)
-                  << options[static_cast<std::size_t>(i)]
+                  << option
                   << color_code(RESET) << "\033[K\n";
       }
       ++rendered_lines;
@@ -339,9 +363,8 @@ std::optional<int> prompt_choice(
     for (int i = 0; i < reserve; ++i) std::cout << '\n';
     // CUU (up N) + CR to reach column 0 — both universally supported VT100.
     std::cout << "\033[" << reserve << "A\r";
-    // DEC save cursor (ESC 7): original VT100 spec, supported by every terminal.
-    // We restore to this exact position before every redraw instead of counting lines.
-    std::cout << "\0337";
+    // Save the top-of-menu cursor position so redraws can return here cleanly.
+    std::cout << "\033[s";
   }
   render();
 
@@ -373,7 +396,7 @@ std::optional<int> prompt_choice(
     }
 
     if (needs_redraw && use_ansi_control()) {
-      std::cout << "\0338";  // DEC restore cursor to saved position (top of menu)
+      std::cout << "\033[u";
       render();
     }
   }
@@ -385,7 +408,7 @@ std::optional<int> prompt_choice(
 
   // Replace the menu with a single confirmation line.
   if (use_ansi_control()) {
-    std::cout << "\0338\033[J";  // restore to saved position, clear to end of screen
+    std::cout << "\033[u\033[J";
   }
   if (result.has_value()) {
     std::cout << "  " << color_code(CYAN) << "\xe2\x9c\x93 " << color_code(RESET)
