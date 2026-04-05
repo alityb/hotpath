@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.2 - 2026-04-05
+
+Release workflow safety rollback.
+
+Highlights:
+
+- Linux wheel publishing is temporarily disabled because the manylinux packaged binary still crashes during wheel smoke tests, even though source builds are healthy
+- PyPI release flow now publishes the source distribution only, which keeps installs on the safe path that compiles against the target system rather than shipping a broken prebuilt ELF
+- the wheel smoke command remains in `pyproject.toml` so future wheel work still fails fast until the packaging root cause is fixed
+
 ## v0.2.1 - 2026-04-05
 
 Packaging and interactive TUI hardening.

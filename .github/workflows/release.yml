@@ -32,60 +32,10 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  build_linux_wheels:
-    name: build linux wheels
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v3.1.4
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-wheels-linux
-          path: wheelhouse/*.whl
-          if-no-files-found: error
-
-  test_linux_wheels:
-    name: test linux wheels
-    needs:
-      - build_linux_wheels
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist-wheels-linux
-          path: dist
-
-      - name: Install matching wheel
-        shell: bash
-        run: |
-          py_tag="cp${{ matrix.python-version }}"
-          py_tag="${py_tag//./}"
-          python -m pip install -U pip
-          python -m pip install dist/hotpath-*-"${py_tag}"-*.whl
-
-      - name: Wheel CLI smoke
-        run: |
-          hotpath --help
-          printf 'q\n' | hotpath
-          hotpath version
-
   publish_pypi:
     name: publish to PyPI
     needs:
       - build_sdist
-      - build_linux_wheels
-      - test_linux_wheels
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     environment: pypi
@@ -95,11 +45,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dist-sdist
-          path: dist
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist-wheels-linux
           path: dist
 
       - name: Publish package distributions to PyPI
