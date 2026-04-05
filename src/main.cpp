@@ -3094,7 +3094,7 @@ int main(int argc, char** argv) {
     }
 
     if (command == "version") {
-      std::cout << "hotpath 0.2.7\n";
+      std::cout << "hotpath 0.2.8\n";
       return 0;
     }
 

@@ -1246,8 +1246,8 @@ int run_serve_profile(const ServeProfileOptions& opts) {
   std::mutex snap_mtx;
   DashSnap dash_snap;
 
-  // Whether the DEC cursor save position has been set for the dashboard.
-  bool dash_cursor_saved = false;
+  // Number of dashboard lines rendered in the previous frame.
+  int dash_rendered_lines = 0;
 
   // Render one dashboard frame.  Only called from the dashboard thread.
   auto draw_dash = [&]() {
@@ -1260,16 +1260,9 @@ int run_serve_profile(const ServeProfileOptions& opts) {
     DashSnap snap;
     { std::lock_guard<std::mutex> lg(snap_mtx); snap = dash_snap; }
 
-    if (use_ansi) {
-      if (!dash_cursor_saved) {
-        // First frame: save cursor position with DEC ESC 7 (VT100 original spec).
-        std::cerr << "\0337";
-        dash_cursor_saved = true;
-      } else {
-        // Subsequent frames: restore to saved position (ESC 8) instead of
-        // counting lines with \033[N A which is fragile across terminal types.
-        std::cerr << "\0338";
-      }
+    int lines_written = 0;
+    if (use_ansi && dash_rendered_lines > 0) {
+      std::cerr << "\033[" << dash_rendered_lines << "A\r\033[J";
     }
 
     // Helper: print a line, erasing trailing content if ANSI is available.
@@ -1278,6 +1271,7 @@ int run_serve_profile(const ServeProfileOptions& opts) {
       std::cerr << s;
       if (use_ansi) std::cerr << "\033[K";
       std::cerr << "\n";
+      ++lines_written;
     };
 
     // ── header ──────────────────────────────────────────────────────────────
@@ -1349,6 +1343,7 @@ int run_serve_profile(const ServeProfileOptions& opts) {
     }
 
     std::cerr << std::flush;
+    dash_rendered_lines = lines_written;
   };
 
   // Dashboard thread: polls server metrics and redraws every 500 ms.
@@ -1401,8 +1396,8 @@ int run_serve_profile(const ServeProfileOptions& opts) {
   dash_thread.join();
 
   // Clear the dashboard and print a compact final summary.
-  if (use_ansi && dash_cursor_saved)
-    std::cerr << "\0338\033[J";  // restore to saved position, clear to end of screen
+  if (use_ansi && dash_rendered_lines > 0)
+    std::cerr << "\033[" << dash_rendered_lines << "A\r\033[J";
   {
     const int elapsed_s = static_cast<int>(now_seconds() - dash_start);
     const int done = dash_done.load(), ok = dash_ok.load(), fail = dash_fail.load();

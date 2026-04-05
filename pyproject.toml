@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "hotpath"
-version = "0.2.7"
+version = "0.2.8"
 description = "Profile vLLM inference under RL-style rollout workloads."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.8 - 2026-04-05
+
+serve-profile terminal redraw fix.
+
+Highlights:
+
+- replaced the live serve-profile dashboard DEC cursor save and restore path with explicit cursor-up redraws
+- fixes duplicated dashboard frames in Ghostty and similar terminals during live profiling
+- keeps the existing live dashboard behavior while using a more predictable ANSI redraw path
+
 ## v0.2.7 - 2026-04-05
 
 vLLM v1 timing correctness and reporting fixes.
