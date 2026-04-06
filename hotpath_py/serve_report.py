@@ -1,4 +1,13 @@
-"""Rich + plotext terminal renderer for hotpath serve-report."""
+"""Rich + plotext terminal renderer for hotpath serve-report.
+
+Can be invoked directly by the C++ binary:
+    python3 -m hotpath_py.serve_report <db_path>
+
+Exit codes:
+    0  — rendered successfully
+    1  — error (bad db, missing data)
+    2  — rich/plotext not available; caller should fall back to C++ renderer
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -659,3 +668,11 @@ def render(db_path: str) -> int:
     console.print(Padding(footer, (0, 0, 1, 0)))
 
     return 0
+
+if __name__ == "__main__":
+    if not DEPS_AVAILABLE:
+        sys.exit(2)
+    if len(sys.argv) < 2:
+        print("usage: python3 -m hotpath_py.serve_report <serve_profile.db>", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(render(sys.argv[1]))

@@ -2618,10 +2618,13 @@ int handle_serve_profile(const Args& args) {
 
 int handle_serve_report(const Args& args) {
   std::string db_path;
+  bool force_text = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
-    if (!args[i].starts_with("--")) {
+    if (args[i] == "--format" && i + 1 < args.size() && args[i + 1] == "text") {
+      force_text = true;
+      ++i;
+    } else if (!args[i].starts_with("--")) {
       db_path = args[i];
-      break;
     }
   }
   if (db_path.empty()) {
@@ -2631,6 +2634,26 @@ int handle_serve_report(const Args& args) {
   if (!std::filesystem::exists(db_path)) {
     std::cerr << "error: file not found: " << db_path << "\n";
     return 1;
+  }
+
+  // Try the Rich/plotext Python renderer first (exit 2 = not available, fall through).
+  if (!force_text) {
+    const char* _py = std::getenv("HOTPATH_PYTHON_EXECUTABLE");
+    if (!_py || std::string(_py).empty()) _py = std::getenv("RLPROF_PYTHON_EXECUTABLE");
+    // Use the env-specified Python (set by the Python wrapper), else plain python3.
+    // Do NOT fall back to .venv/bin/python — the rich/plotext renderer lives in the
+    // system Python, not the project venv (which is only for torch/vllm bench work).
+    const std::string python =
+        (_py != nullptr && std::string(_py).size() > 0)
+            ? std::string(_py)
+            : "python3";
+    const std::string cmd =
+        shell_escape(python) + " -m hotpath_py.serve_report " +
+        shell_escape(db_path) + " 2>/dev/null";
+    const int rc = std::system(cmd.c_str());
+    if (rc == 0) return 0;
+    // rc == 2 → deps unavailable, fall through to C++ renderer
+    // rc != 0 && rc != 2 → module not found or other error, fall through silently
   }
   const auto kv = hotpath::load_serve_analysis(db_path);
   if (kv.empty()) {

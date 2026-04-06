@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.5 - 2026-04-06
+
+Wire Rich frontend through C++ binary.
+
+Highlights:
+
+- `./build/hotpath serve-report` and the interactive menu now both invoke the Rich/plotext renderer — the Python renderer is tried first via `std::system()`, falling back to the C++ renderer only when unavailable
+- fixed the Python executable selection: the renderer now uses `RLPROF_PYTHON_EXECUTABLE` (set by the Python wrapper) or plain `python3`, skipping `.venv/bin/python` which only carries torch/vllm deps, not rich/plotext
+- `--format text` on `serve-report` forces the original C++ output
+
 ## v0.3.4 - 2026-04-06
 
 Rich terminal frontend for serve-report.
