@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.7 - 2026-04-06
+
+Readability polish for serve-report and serve-profile dashboard.
+
+Highlights:
+
+- latency table now always shows units on every value (`238 µs`, `375.9 ms`) — previously values ≥ 1ms had no unit suffix
+- p99 column marked with `▴` and rendered bold + semantic color (green/yellow/red); p50 dim gray, p90 medium — eyes land on worst-case first (k9s-style column hierarchy)
+- serve-profile live dashboard: progress bar fills colored (cyan for time, green for requests); batch/queue/cache values color-coded by severity (green < 8, yellow 8-16, red > 16 for batch; green > 70% cache, yellow 30-70%, red below)
+- color palette tightened: dim labels, bright values, cyan for identity/headers, semantic green/yellow/red for status — inspired by k9s, bottom, htop
+
 ## v0.3.6 - 2026-04-06
 
 Compact serve-report layout.

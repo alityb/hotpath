@@ -1606,54 +1606,69 @@ int run_serve_profile(const ServeProfileOptions& opts) {
       ++lines_written;
     };
 
+    // ── ANSI helpers ─────────────────────────────────────────────────────────
+    // bold cyan, bold green, bold yellow, bold red, dim, reset
+    auto A = [&](const char* code) -> std::string {
+      return use_color ? std::string("\033[") + code + "m" : "";
+    };
+    const auto RST  = A("0");
+    const auto DIM  = A("2");
+    const auto BOLD = A("1");
+    const auto CYAN = A("1;36");
+    const auto GRN  = A("32");
+    const auto YEL  = A("33");
+    const auto RED  = A("31");
+    const auto BGRN = A("1;32");
+    const auto BYEL = A("1;33");
+    const auto BRED = A("1;31");
+
+    // Colored progress bar: filled portion gets `fill_color`.
+    auto cbar = [&](int fill, int total, int width, const char* fill_color) -> std::string {
+      const int n = (total > 0) ? std::clamp(fill * width / total, 0, width) : 0;
+      std::string s;
+      if (use_color && n > 0) s += std::string("\033[") + fill_color + "m";
+      for (int i = 0; i < n; ++i) s += "\xe2\x96\x88";      // █
+      if (use_color && n > 0) s += "\033[0m\033[2m";
+      for (int i = n; i < width; ++i) s += "\xe2\x96\x91";  // ░
+      if (use_color) s += "\033[0m";
+      return s;
+    };
+
     // ── header ──────────────────────────────────────────────────────────────
     {
       std::ostringstream h;
-      h << "  ";
-      if (use_color) h << "\033[1m\033[36m";
-      h << "serve-profile";
-      if (use_color) h << "\033[0m";
-      if (!model.empty()) {
-        if (use_color) h << "  \033[2m"; else h << "  ·  ";
-        h << model;
-        if (use_color) h << "\033[0m";
-      }
+      h << "  " << CYAN << "serve-profile" << RST;
+      if (!model.empty())
+        h << "  " << DIM << model << RST;
       ln(h.str());
     }
 
     // ── time bar ─────────────────────────────────────────────────────────────
     {
       std::ostringstream s;
-      const int shown_elapsed_s =
-          opts.duration_seconds > 0 ? std::min(elapsed_s, opts.duration_seconds) : elapsed_s;
-      s << "  time      " << prog_bar(shown_elapsed_s, opts.duration_seconds, time_bar_width);
-      s << "  ";
-      if (use_color) s << "\033[2m";
-      s << shown_elapsed_s << "s";
+      const int shown = opts.duration_seconds > 0
+          ? std::min(elapsed_s, opts.duration_seconds) : elapsed_s;
+      s << "  " << DIM << "time     " << RST << "  "
+        << cbar(shown, opts.duration_seconds, time_bar_width, "36")
+        << "  " << DIM << shown << "s";
       if (opts.duration_seconds > 0) s << " / " << opts.duration_seconds << "s";
-      if (use_color) s << "\033[0m";
+      s << RST;
       ln(s.str());
     }
 
-    // ── request bar (only shown when replaying traffic) ───────────────────────
+    // ── request bar ──────────────────────────────────────────────────────────
     if (total_reqs > 0) {
       std::ostringstream s;
-      s << "  requests  " << prog_bar(done, total_reqs, request_bar_width);
-      s << "  " << done << " / " << total_reqs;
-      if (ok > 0) {
-        if (use_color) s << "  \033[32m"; else s << "  ok:";
-        s << "\xe2\x9c\x93" << ok;  // ✓
-        if (use_color) s << "\033[0m";
-      }
-      if (fail > 0) {
-        if (use_color) s << "  \033[31m"; else s << "  fail:";
-        s << "\xe2\x9c\x97" << fail;  // ✗
-        if (use_color) s << "\033[0m";
-      }
+      s << "  " << DIM << "requests " << RST << "  "
+        << cbar(done, total_reqs, request_bar_width, "32")
+        << "  " << done << " / " << total_reqs;
+      if (ok > 0)   s << "  " << BGRN << "\xe2\x9c\x93" << ok << RST;
+      if (fail > 0) s << "  " << BRED << "\xe2\x9c\x97" << fail << RST;
       if (rate > 0.0) {
-        if (use_color) s << "  \033[2m"; else s << "  ";
-        s << std::fixed << std::setprecision(2) << rate << " req/s";
-        if (use_color) s << "\033[0m";
+        // colour req/s: green if decent, yellow if slow
+        const char* rc = (rate >= 1.0) ? "32" : "33";
+        s << "  " << (use_color ? std::string("\033[") + rc + "m" : "")
+          << std::fixed << std::setprecision(2) << rate << " req/s" << RST;
       }
       ln(s.str());
     }
@@ -1661,19 +1676,29 @@ int run_serve_profile(const ServeProfileOptions& opts) {
     // ── server metrics ────────────────────────────────────────────────────────
     if (snap.available) {
       std::ostringstream s;
-      s << "  server    ";
-      s << "batch " << static_cast<int>(snap.batch);
-      s << "  \xc2\xb7  queue " << static_cast<int>(snap.queue);  // ·
+      s << "  " << DIM << "server   " << RST << "  ";
+
+      // batch: green <8, yellow 8-16, red >16
+      const int ibatch = static_cast<int>(snap.batch);
+      const std::string bcol = ibatch == 0 ? DIM : (ibatch <= 8 ? GRN : (ibatch <= 16 ? YEL : RED));
+      s << DIM << "batch " << RST << bcol << ibatch << RST;
+
+      // queue: show in yellow/red if non-zero
+      const int iqueue = static_cast<int>(snap.queue);
+      s << "  " << DIM << "queue " << RST;
+      if (iqueue > 0) s << YEL << iqueue << RST;
+      else            s << DIM << "0" << RST;
+
+      // cache %: green >70, yellow 30-70, red <30
       if (snap.cache >= 0) {
-        s << "  \xc2\xb7  cache ";
-        s << std::fixed << std::setprecision(0) << snap.cache << "%";
+        const double ch = snap.cache;
+        const std::string ccol = ch >= 70 ? GRN : (ch >= 30 ? YEL : RED);
+        s << "  " << DIM << "cache " << RST << ccol
+          << std::fixed << std::setprecision(0) << ch << "%" << RST;
       }
       ln(s.str());
     } else {
-      if (use_color)
-        ln("  server    \033[2mconnecting...\033[0m");
-      else
-        ln("  server    connecting...");
+      ln("  " + DIM + "server    connecting..." + RST);
     }
 
     std::cerr << std::flush;
