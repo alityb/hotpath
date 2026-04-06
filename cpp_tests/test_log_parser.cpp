@@ -195,6 +195,38 @@ int main() {
   expect_true(far_result.matched_requests == 0,
               "timestamp fallback should not false-match distant requests");
 
+  std::vector<hotpath::RequestTrace> partial_client = {
+      hotpath::RequestTrace{.request_id = "cmpl-partial", .arrival_us = 999500},
+  };
+  std::vector<hotpath::RequestTrace> partial_server = {
+      hotpath::RequestTrace{
+          .request_id = "cmpl-partial",
+          .queue_start_us = 1000000,
+          .status = "ok",
+          .server_timing_available = false,
+          .events = {
+              hotpath::RequestEvent{
+                  .event_type = "queue",
+                  .timestamp_us = 1000000,
+                  .detail = "{}",
+              },
+          },
+      },
+  };
+  const auto partial_result = hotpath::correlate_server_traces(partial_client, partial_server);
+  expect_true(partial_result.method == hotpath::ServerTraceMatchMethod::ID,
+              "partial exact-ID traces should still correlate by ID");
+  expect_true(partial_result.matched_requests == 1,
+              "partial exact-ID traces should count as matched");
+  expect_true(partial_client[0].queue_start_us == 1000000,
+              "partial exact-ID trace should preserve queue_start for later refinement");
+  expect_true(partial_client[0].prefill_start_us == 0,
+              "partial exact-ID trace should clear client-side proxy prefill timing");
+  expect_true(partial_client[0].prefill_end_us == 0,
+              "partial exact-ID trace should clear client-side proxy prefill completion timing");
+  expect_true(!partial_client[0].server_timing_available,
+              "partial exact-ID trace should remain marked incomplete before refinement");
+
   const std::vector<std::string> v1_lines = {
       "DEBUG 04-05 22:17:49 [v1/engine/core.py:1170] EngineCore loop active.",
       "DEBUG 04-05 22:17:49 [v1/worker/gpu_model_runner.py:3888] Running batch with cudagraph_mode: NONE, batch_descriptor: BatchDescriptor(num_tokens=103, num_reqs=None, uniform=False, has_lora=False, num_active_loras=0), should_ubatch: False, num_tokens_across_dp: None",

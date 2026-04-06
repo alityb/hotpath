@@ -856,13 +856,21 @@ bool sane_server_trace(const RequestTrace& trace) {
 }
 
 void apply_server_trace(RequestTrace& client, const RequestTrace& server) {
+  if (server.queue_start_us > 0 || server.prefill_start_us > 0 ||
+      server.prefill_end_us > 0 || server.server_last_token_us > 0 ||
+      !server.events.empty()) {
+    // Replace client-side proxy timestamps with the matched server-side view,
+    // even when it is partial. This lets the vLLM v1 refinement path detect
+    // incomplete second-resolution traces and reconstruct them consistently.
+    client.queue_start_us = server.queue_start_us;
+    client.prefill_start_us = server.prefill_start_us;
+    client.prefill_end_us = server.prefill_end_us;
+    client.server_last_token_us = server.server_last_token_us;
+  }
   if (server.server_timing_available && sane_server_trace(server)) {
     client.queue_start_us = server.queue_start_us;
     client.prefill_start_us = server.prefill_start_us;
     client.prefill_end_us = server.prefill_end_us;
-    if (server.server_last_token_us > 0) {
-      client.server_last_token_us = server.server_last_token_us;
-    }
     client.server_timing_available = true;
   }
   if (server.prompt_tokens > 0) {
@@ -904,7 +912,8 @@ bool refine_order_matched_v1_timing(
     double total_client_decode_us = 0.0;
     int client_decode_samples = 0;
     for (const auto& trace : traces) {
-      if (trace.last_token_us > trace.first_token_us) {
+      if (trace.first_token_us > trace.arrival_us &&
+          trace.last_token_us > trace.first_token_us) {
         total_client_decode_us += static_cast<double>(trace.last_token_us - trace.first_token_us);
         ++client_decode_samples;
       }
@@ -917,6 +926,12 @@ bool refine_order_matched_v1_timing(
 
   bool refined_any = false;
   for (auto& trace : traces) {
+    const bool partial_v1_anchor =
+        trace.queue_start_us > 0 &&
+        trace.queue_start_us % 1000000 == 0 &&
+        (trace.prefill_start_us <= 0 || trace.prefill_start_us % 1000000 == 0) &&
+        (trace.prefill_end_us <= 0 || trace.prefill_end_us % 1000000 == 0) &&
+        (trace.server_last_token_us <= 0 || trace.server_last_token_us % 1000000 == 0);
     const bool second_quantized =
         trace.queue_start_us > 0 &&
         trace.prefill_start_us > 0 &&
@@ -926,9 +941,10 @@ bool refine_order_matched_v1_timing(
         trace.prefill_end_us % 1000000 == 0 &&
         (trace.server_last_token_us <= 0 || trace.server_last_token_us % 1000000 == 0);
     const bool should_refine =
-        trace.server_timing_available &&
         trace.arrival_us > 0 &&
-        (trace_correlation.method == ServerTraceMatchMethod::ORDER || second_quantized);
+        (trace_correlation.method == ServerTraceMatchMethod::ORDER ||
+         (trace_correlation.method == ServerTraceMatchMethod::ID &&
+          (second_quantized || partial_v1_anchor)));
     if (!should_refine) {
       continue;
     }
@@ -982,7 +998,9 @@ bool refine_order_matched_v1_timing(
     }
     if (decode_mean_us > 0.0) {
       double target_decode_us = decode_mean_us;
-      if (client_decode_mean_us > 0.0 && trace.last_token_us > trace.first_token_us) {
+      if (client_decode_mean_us > 0.0 &&
+          trace.first_token_us > trace.arrival_us &&
+          trace.last_token_us > trace.first_token_us) {
         const double client_decode_us =
             static_cast<double>(trace.last_token_us - trace.first_token_us);
         target_decode_us = client_decode_us * (decode_mean_us / client_decode_mean_us);

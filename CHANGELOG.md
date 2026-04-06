@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.2 - 2026-04-06
+
+vLLM v1 server timing reconstruction fix.
+
+Highlights:
+
+- `serve-profile` now keeps partial exact-ID vLLM v1 traces instead of discarding them early, which removes the misleading invalid timing warnings from real debug-log runs
+- exact-ID correlation now replaces client-side placeholder phase timestamps with the matched server-side view before refinement, so all matched requests can participate in queue, prefill, and decode reconstruction
+- vLLM v1 decode reconstruction now ignores requests that never observed a streamed first token when computing the client decode baseline, which prevents single bad requests from collapsing server decode estimates
+- live verification against `Qwen/Qwen3.5-4B` on `localhost:8000` now parses and matches all 10 requests by ID and produces non-degenerate server queue, prefill, and decode distributions in `serve-report`
+
 ## v0.3.1 - 2026-04-06
 
 Metrics-only serve-profile messaging fix and release cleanup.

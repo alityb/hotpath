@@ -640,7 +640,20 @@ VllmLogParseResult parse_vllm_log_lines_detailed(const std::vector<std::string>&
   for (auto& [id, trace] : traces) {
     if ((trace.queue_start_us > 0 || trace.prefill_start_us > 0 || trace.prefill_end_us > 0) &&
         !timing_available_and_sane(trace)) {
-      discard_invalid_timing(trace);
+      if (looks_like_v1) {
+        // vLLM v1 often gives us only exact request admission timestamps here.
+        // Keep those partial anchors so the later correlation/refinement pass can
+        // reconstruct queue/prefill/decode from client timing and Prometheus means.
+        trace.server_timing_available = false;
+        if (trace.prefill_start_us > 0 && trace.prefill_end_us > 0 &&
+            trace.prefill_end_us < trace.prefill_start_us) {
+          trace.prefill_start_us = 0;
+          trace.prefill_end_us = 0;
+          trace.server_last_token_us = 0;
+        }
+      } else {
+        discard_invalid_timing(trace);
+      }
     }
     if (trace.status.empty()) {
       trace.status = "ok";
