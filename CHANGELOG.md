@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.1 - 2026-04-06
+
+Metrics-only serve-profile messaging fix and release cleanup.
+
+Highlights:
+
+- metrics-only `serve-profile` runs now say explicitly that no traffic file was provided and that per-request queue, prefill, and decode timing require requests during the capture window
+- when a server log is found but a run observed zero requests, hotpath now reports that no requests were observed during the profiling run instead of blaming the vLLM log format
+- `logs.md` was removed from the tracked release contents and is now local-only again
+
 ## v0.3.0 - 2026-04-06
 
 Serving timing, log discovery, and report accuracy hardening.

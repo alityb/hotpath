@@ -1692,6 +1692,9 @@ int run_serve_profile(const ServeProfileOptions& opts) {
     };
     replay_results = replay_traffic(requests, rc);
   } else {
+    std::cerr << "No traffic file provided. Collecting metrics only.\n"
+              << "Per-request queue, prefill, and decode timing require requests during "
+                 "the capture window.\n";
     // No traffic file — sleep until duration elapses.
     const double end = dash_start + static_cast<double>(opts.duration_seconds);
     while (now_seconds() < end)
@@ -1813,17 +1816,31 @@ int run_serve_profile(const ServeProfileOptions& opts) {
           });
       trace_correlation = correlate_server_traces(traces, log_parse.traces, true, 50000);
       aggregate_cache_hit_rate = log_parse.aggregate_cache_hit_rate;
+      const bool no_profiled_requests = traces.empty();
       if (!log_parse.traces.empty()) {
         std::cerr << "Parsed " << log_parse.traces.size()
                   << " server-side request traces from " << server_log_path->string()
                   << " (" << log_lines.size() << " new log lines)\n";
       } else if (log_parse.aggregate_cache_hit_rate.has_value()) {
-        std::cerr << "Server log: aggregate cache hit rate extracted (no per-request traces "
-                  << "— vLLM v1 engine does not log per-request debug lines)\n";
+        if (no_profiled_requests) {
+          std::cerr << "Server log: aggregate cache hit rate extracted.\n"
+                    << "No requests were observed during this profiling run, so there are "
+                       "no per-request traces to correlate.\n";
+        } else {
+          std::cerr << "Server log: aggregate cache hit rate extracted, but no per-request "
+                       "timing traces were parsed from the current log window.\n";
+        }
       } else {
-        std::cerr << "Server log found at " << server_log_path->string()
-                  << " but no per-request DEBUG timing lines were parsed.\n"
-                  << "  Restart the server with VLLM_LOGGING_LEVEL=DEBUG and capture stdout/stderr to a file.\n";
+        if (no_profiled_requests) {
+          std::cerr << "Server log found at " << server_log_path->string()
+                    << ", but no requests were observed during this profiling run.\n"
+                    << "  Pass --traffic or send live traffic during the capture window for "
+                       "per-request timing.\n";
+        } else {
+          std::cerr << "Server log found at " << server_log_path->string()
+                    << " but no per-request DEBUG timing lines were parsed.\n"
+                    << "  Restart the server with VLLM_LOGGING_LEVEL=DEBUG and capture stdout/stderr to a file.\n";
+        }
         if (listener_log_info.pid > 0) {
           if (!listener_log_info.vllm_logging_level.has_value()) {
             std::cerr << "  Listener PID " << listener_log_info.pid
@@ -2193,7 +2210,7 @@ int run_serve_profile(const ServeProfileOptions& opts) {
             << " — " << disagg.reason << "\n";
   std::cerr << "\nNote: TTFT (client) is measured from the first streamed token chunk.\n";
   std::cerr << "      TTFT (server, mean) comes from the Prometheus histogram when available.\n";
-  std::cerr << "      Queue/Prefill/Decode (server) require vLLM DEBUG logs.\n";
+  std::cerr << "      Queue/Prefill/Decode (server) require vLLM DEBUG logs and requests during the capture window.\n";
   std::cerr << "\nRun:  hotpath serve-report " << db_path.string() << "\n";
 
   return 0;
